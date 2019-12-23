@@ -1,0 +1,505 @@
+
+mem_patch00:
+01   #mem_patch00
+00  #mem_patch01
+00   #mem_patch02
+00   #mem_patch03
+00   #mem_patch04
+00   #mem_patch05
+00   #mem_patch06
+00   #mem_patch07
+00   #mem_patch08
+00   #mem_patch09
+00   #mem_patch0A
+00   #mem_patch0B
+00   #mem_patch0C
+00   #mem_patch0D
+00   #mem_patch0E
+00   #mem_patch0F
+20   #mem_patch10
+02   #mem_patch11
+00   #mem_patch12
+00   #mem_patch13
+00   #mem_patch14
+00   #mem_patch15
+02   #mem_patch16
+00   #mem_patch17
+00   #mem_patch18
+00   #mem_patch19
+00   #mem_patch1A
+20   #mem_patch1B
+01   #mem_patch1C
+00   #mem_patch1D
+00   #mem_patch1E
+00   #mem_patch1F
+00   #mem_patch20
+00   #mem_patch21
+00   #mem_patch22
+00   #mem_patch23
+00   #mem_patch24
+00   #mem_patch25
+00   #mem_patch26
+00   #mem_patch27
+00   #mem_patch28
+04   #mem_patch29
+00   #mem_patch2A
+00   #mem_patch2B
+40   #mem_patch2C
+00   #mem_patch2D
+00   #mem_patch2E
+40   #mem_patch2F
+24   #mem_patch30
+00   #mem_patch31
+00   #mem_patch32
+00   #mem_patch33
+40   #mem_patch34
+00   #mem_patch35
+00   #mem_patch36
+00   #mem_patch37
+00   #mem_patch38
+00   #mem_patch39
+00   #mem_patch3A
+00   #mem_patch3B
+00   #mem_patch3C
+80   #mem_patch3D
+00   #mem_patch3E
+00   #mem_patch3F
+
+mem_device_option:0a
+mem_ui_profile_supported:40
+mem_app_connection_options:13
+
+mem_features:
+ff
+fb
+8f
+f8      #fe--EDR  F8--BR
+8b     #AFHclose 83
+85
+59
+83
+
+##############ADC CONFIG##############
+mem_adc_config_flag:01
+mem_module_read_vdd_count:00
+mem_module_read_vdd_flag:00
+#####################################
+
+##############NVRAM CONFIG##############
+mem_nv_data_ptr:mem_module_nv_data
+mem_nv_data_number:05
+#####################################
+
+##############SPP CONFIG##############
+mem_credit_flag:00
+mem_rfcomm_max_frame_size:7f 00
+mem_rfcomm_credit_init_data:07
+#####################################
+
+##############SSP CONFIG##############
+mem_sp_iocap_local:03 00 04
+mem_ssp_enable:01
+mem_pin_length:04  30 30 30 30 30
+#####################################
+
+##############UART CONFIG##############
+#mem_baud:D0 00 //115200
+mem_baud:C4 09 //9600
+mem_module_uart_rx_buffer:00 1c
+mem_module_uart_rx_buffer_end:ff 1f
+mem_module_uart_tx_buffer:00 4c
+mem_module_uart_tx_buffer_end:ef 4f
+#####################################
+
+##############BLUETOOTH CONFIG##############
+###commom###
+mem_soft_version_num:00 05
+mem_module_state:03
+mem_module_bluetooth_stauts_by_command:07
+mem_class:24 04 04
+
+mem_module_flag:00
+#bit0 MODULE_FLAG_UART_FLOW_CONTROL
+#bit1 MODULE_FLAG_BLE_SEND_MTU23
+#bit2 MODULE_FLAG_BLE_DATA_ENCRYPT
+
+mem_ui_button_gpio:ff
+mem_lpm_mode:01
+mem_lpm_interval:00 01
+mem_lpm_overhead:08
+mem_lpm_mult_timeout:02
+
+mem_module_wake_up_gpio:9b
+mem_module_mcu_wake_pin:88#88
+mem_module_mcu_wake_delay_us:60 00 00 00 
+
+###3.0###
+mem_scan_mode:00
+mem_module_spp_lpm_mult:28
+mem_lap:77 1a 21 31 10 3a
+mem_local_name_length:
+'BeacoolBT
+#'YichipFPGA
+
+###3.0 sinff param###
+mem_sniff_param_interval:20 00
+mem_sniff_param_attempt:01
+mem_sniff_param_timeout:00
+
+
+###ble###
+mem_le_pairing_handle:2a 00
+mem_le_configuration:08
+
+mem_le_secure_connect_enable:00
+mem_le_adv_channel_map:07
+mem_le_pairing_mode:00
+
+mem_module_data_write_handle:2d 00
+mem_module_data_write_handle2:2f 00
+mem_module_data_write_handle3:31 00
+
+mem_le_adv_enable:00
+mem_le_adv_interval:f0 00
+mem_module_le_lpm_mult:05
+mem_le_lap:2a 31 00 33 02 3a
+mem_le_name_len:
+'BeacoolBLE
+#'Yichip 1021s Mou
+
+mem_le_adv_data_len:03
+mem_le_adv_data:
+02 01 02
+
+mem_le_scan_data_len:0e
+
+mem_le_scan_data:# 1 byte length + 1 byte type + N bytes data
+02 01 02
+'\09BeacoolBLE
+#'\09Yichip 1021s Mou
+
+mem_le_pres:02 03 00 05 10 02 03
+
+mem_le_interval_min:
+08 00 #min interval
+10 00 #max interval
+00 00 #latency
+2c 01 #timeout
+
+
+mem_le_local_mtu:b9
+mem_le_remote_mtu:17
+
+
+#####################################
+
+
+mem_eir_enable:01
+mem_all_uuid_16bits: 
+05
+03#Type: Complete list of 16-bit UUIDs
+0012 0001 0100 0111 0300 
+
+mem_all_uuid_128bits:
+00
+
+
+mem_ui_uuid_table:mem_module_uuid_list
+
+mem_module_uuid_list:
+03
+12
+00
+01
+00
+00
+01
+00
+01
+00
+01
+36
+00
+52
+09
+00
+00
+0a
+00
+01
+00
+01
+09
+00
+01
+35
+03
+19
+12
+00
+09
+00
+04
+35
+0d
+35
+06
+19
+01
+00
+09
+00
+01
+35
+03
+19
+00
+01
+09
+00
+09
+35
+08
+35
+06
+19
+12
+00
+09
+01
+00
+09
+02
+00
+09
+01
+03
+09
+02
+01
+09
+05
+ac
+09
+02
+02
+09
+02
+39
+09
+02
+03
+09
+06
+44
+09
+02
+04
+28
+01
+09
+02
+05
+09
+00
+02
+03
+11
+01
+00
+03
+01
+00
+00
+01
+00
+03
+36
+00
+46
+09
+00
+00
+0a
+00
+01
+00
+03
+09
+00
+01
+35
+03
+19
+11
+01
+09
+00
+02
+0a
+00
+00
+00
+00
+09
+00
+04
+35
+0c
+35
+03
+19
+01
+00
+35
+05
+19
+00
+03
+08
+01
+09
+00
+06
+35
+09
+09
+65
+6e
+09
+00
+6a
+09
+01
+00
+09
+01
+00
+25
+0a
+53
+50
+50
+20
+73
+6c
+61
+76
+65
+00
+00
+00
+01
+00
+
+
+mem_ui_le_uuid_table:mem_module_le_att_list
+
+#attribute list: handle 2bytes, uuid 2bytes, length 1bytes, attribute Nbytes
+mem_module_le_att_list:
+#Primary service GAP ------
+01 00 02 00 28 02 00 18
+
+#Device name
+02 00 02 03 28 01 0a
+03 00 02 00 2a 14 41 73 74 20 4c 45 20 4d 6f 75 73 65 20 20 20 20 20 20 20 20
+
+#Appearance
+04 00 02 03 28 01 02
+05 00 02 01 2a 02 c8 00 #3c2=hid mouse
+
+#Peripheral Preferred Connection Parameters
+06 00 02 03 28 01 02
+07 00 02 04 2a 08 06 00 06 00 64 00 2c 01 # interval 6ms, latency 100, timeout 300
+
+
+#privcy flag
+08 00 02 03 28 01 08
+09 00 02 02 2a 01 01
+
+#reconnecting addr 
+0a 00 02 03 28 01 08
+0b 00 02 03 2a 06 00 00 00 00 00 00
+
+#Primary service GATT ------
+0c 00 02 00 28 02 01 18
+
+#Service changed
+0d 00 02 03 28 01 20
+0e 00 02 05 2a 00
+#Client Characteristic Configuration
+0f 00 02 02 29 02 00 00
+
+#Primary service TX power ------
+10 00 02 00 28 02 04 18
+#Characteristic Tx power level
+11 00 02 03 28 01 16
+12 00 02 07 2a 01 00
+13 00 02 02 29 02 00 00
+
+#Primary service Battery ------
+14 00 02 00 28 02 0f 18
+#Characteristic Battery level
+15 00 02 03 28 01 12
+16 00 02 19 2a 01 38
+
+#Primary service device infomation
+17 00 02 00 28 02 0a 18
+#Characteristic system id
+18 00 02 03 28 01 02
+19 00 02 23 2a 03 00 00 00
+
+#Characteristic manufactor name
+1a 00 02 03 28 01 02
+1b 00 02 29 2a 08 46 6c 61 67 74 72 69 70
+
+#Characteristic module number
+1c 00 02 03 28 01 02
+1d 00 02 24 2a 06 79 69 63 68 69 70
+
+#Characteristic serial number
+1e 00 02 03 28 01 02
+1f 00 02 25 2a 04 63 6f 6d 33
+
+#Characteristic firmware version
+20 00 02 03 28 01 02
+21 00 02 26 2a 03 31 2e 30
+
+#Characteristic software version
+22 00 02 03 28 01 02
+23 00 02 28 2a 03 31 2e 30
+
+#Characteristic hardware version
+24 00 02 03 28 01 02
+25 00 02 2a 2a 03 31 2e 30
+
+#Characteristic regulatory version
+26 00 02 03 28 01 02
+27 00 02 25 2a 04 63 6f 6d 33
+
+#Primary service yichip transmit ------
+28 00 02 00 28 10 55 e4 05 d2 af 9f a9 8f e5 4a 7d fe 43 53 53 49
+#Characteristic tx--notify 
+29 00 02 03 28 01 10
+2a 00 10 16 96 24 47 C6 23 61 BA D9 4B 4D 1E 43 53 53 49 14 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+#Client Characteristic Configuration
+2b 00 02 02 29 02 00 00
+
+#Characteristic rx--write
+2c 00 02 03 28 01 0c
+2d 00 10 b3 9b 72 34 be ec d4 a8 f4 43 41 88 43 53 53 49 14 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+
+
+2e 00 02 03 28 01 0a
+2f 00 10 fe 69 ca 9a 56 19 f6 ab 02 4d aa 6d 43 53 53 49 14 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+
+#Characteristic rx tx -- write 
+30 00 02 03 28 01 18
+31 00 10 18 03 A6 28 5E D8 EC 91 1C 48 A3 AC 43 53 53 49 14 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+#Client Characteristic Configuration
+32 00 02 02 29 02 00 00
+
+#End of Attribute list
+00 00
+
+

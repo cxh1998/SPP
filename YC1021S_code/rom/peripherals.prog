@@ -1,0 +1,2440 @@
+
+/* ===================== two wire SPI gpio ======================= */
+
+twspi_reset:
+	bpatchx patch31_4,mem_patch31
+	hfetch 1,core_gpio_oe3
+	arg 0x06,temp
+	ior temp,pdata
+	hstore 1,core_gpio_oe3
+	hfetch 1,core_gpio_out3
+	ior temp,pdata
+	hstore 1,core_gpio_out3
+	call twspi_disable
+	hfetch 1,core_gpio_out3
+	set0 1,pdata
+	set0 2,pdata
+	hstore 1,core_gpio_out3	
+	nop 30  
+	branch twspi_enable
+
+twspi_reset2:
+	hfetch 1,core_gpio_oe3
+	arg 0xc0,temp
+	ior temp,pdata
+	hstore 1,core_gpio_oe3
+	hfetch 1,core_gpio_out3
+	ior temp,pdata
+	hstore 1,core_gpio_out3
+	call twspi_disable
+	hfetch 1,core_gpio_out3
+	set0 6,pdata
+	set0 7,pdata
+	hstore 1,core_gpio_out3	
+	nop 30  
+	branch twspi_enable2
+
+twspi_disable:
+	hfetch 1,core_gpio_sel1
+	and pdata,0xfc,pdata
+	hstore 1,core_gpio_sel1  //disable spi
+	rtn
+twspi_enable:
+	hfetch 1,core_gpio_sel1
+	or pdata,0x01,pdata
+	hstore 1,core_gpio_sel1  //enable spi
+	rtn
+twspi_enable2:
+	hfetch 1,core_gpio_sel1
+	or pdata,0x03,pdata
+	set0 4,pdata
+	hstore 1,core_gpio_sel1  //enable spi2
+	rtn
+
+// input read reg number: pdata 
+//output reg data: pdata
+sensor_read:
+	copy pdata,regb
+	call spi_ncs_enable
+	nop 100
+	copy regb,pdata
+	call twspi_read
+	copy pdata,regb
+	call spi_ncs_disable
+	nop 100
+	copy regb,pdata
+	rtn
+// input write reg number: pdata 
+sensor_write:
+	copy pdata,regb
+	call spi_ncs_enable
+	nop 100
+	copy regb,pdata
+	call twspi_write
+	call spi_ncs_disable
+	nop 100
+	rtn
+//spi gpio init .
+//0xff :disable spi ncs gpio init
+spi_ncs_gpio_init:
+	fetcht 1,mem_spi_ncs_gpio
+	branch gpio_config_output
+
+//nsc gpio ouput low
+spi_ncs_enable:
+	fetcht 1,mem_spi_ncs_gpio
+	branch gpio_out_active
+
+//ncs gpio output high
+spi_ncs_disable:
+	fetcht 1,mem_spi_ncs_gpio
+	branch gpio_out_inactive
+
+
+twspi_write:
+	branch spid_write_reg
+	
+twspi_read:
+	branch spid_read_reg
+
+
+
+/* ===================== code loading ======================= */
+
+
+read_function_aes:
+	nbranch read_function,user
+	hfetch 1,core_gpio_key2
+	or_into 0x2,pdata   	// enable aes 
+	hstore 1,core_gpio_key2
+read_function:
+	copy temp,null
+	branch read_fuction_zero,zero
+	copy regc,pc
+read_fuction_zero:
+	isolate0 0,null
+	branch set_ucode_status
+	
+/* return temp = block length */
+get_block_header:
+	force 4,temp
+get_block_header0:
+	arg mem_ucode_buf,rega
+	hfetch 1,core_gpio_key2
+	and_into 0xfd,pdata   	// disable aes for header
+	hstore 1,core_gpio_key2
+	call read_function
+	arg 0x55aa,rega
+	fetch 2,mem_ucode_buf
+	ifetcht 2,contr
+	isub rega,null
+	rtn	
+
+read_first_block:
+	arg 2,temp
+	arg mem_ucode_ptr,rega
+	call read_function
+	fetch 2,mem_ucode_ptr
+	store 2,mem_addr_mi
+	call get_iv,user
+	rtn
+	
+get_iv:
+	arg 16,temp
+	arg mem_ucode_keybuf,rega
+	hfetch 1,core_gpio_key2
+	and_into 0xfd,pdata   // disable aes for iv
+	hstore 1,core_gpio_key2
+	call read_function
+	arg mem_ucode_keybuf,contr
+	arg 16,loopcnt
+	call aes_load_data
+	call aes_init
+	call aes_clear_data
+	branch do_aes_cbc					/* generate first IV */
+
+load_storage:
+	disable match
+	call get_block_header
+	nrtn zero
+	enable match
+	hjam 0x80, core_ucode_ctrl
+	hjam 0,core_ucode_hi
+	hjam 0,core_ucode_low
+	arg core_ucode_data,rega
+	call read_function_aes
+	hjam 0x0, core_ucode_ctrl
+load_storage_loop:
+	arg 6,temp
+	call get_block_header0
+	nrtn zero
+	ifetch 2,contr
+	iforce rega
+	call read_function
+	branch load_storage_loop
+
+	
+	/* only load memory data from eeprom */
+reload_eeprom:
+	call clean_mem
+	setarg 0x1000
+	store 2,mem_addr_mi
+	arg iicd_read_eep,regc
+	arg 2,loopcnt
+reload_eeprom_loop:
+	call get_block_header
+	nrtn zero
+	fetch 2,mem_addr_mi
+	byteswap pdata,pdata
+	iadd temp,pdata
+	byteswap pdata,pdata
+	store 2,mem_addr_mi
+	loop reload_eeprom_loop
+	branch load_storage_loop
+	
+loadcode:
+	call clean_mem
+	disable user
+	call otp_enable_chgpump
+	setarg otp_ucode_flag
+	arg mem_otp_ucode_flag,rega
+	arg 2,temp
+	call otpd_read_data
+	fetch 2,mem_otp_ucode_flag
+	bbit0 otp_uflag_aes, loadcode_otp
+	hjam 0x25,core_clkoff			// disable debug uart
+	setarg otp_ucode_aeskey
+	arg mem_ucode_keybuf,rega
+	arg 16,temp
+	call otpd_read_data
+	hjam lock_otp,core_misc_ctrl	// disable further read/write of key
+	set1 mark_otp_encrypt,mark	
+	arg mem_ucode_keybuf,contr
+	call load_key
+	enable user					// set user for aes
+loadcode_otp:
+	jam 0,mem_loadcode_times
+loadcode_otp_2:
+	call loadcode_check_times
+	fetch 2,mem_otp_ucode_flag
+	byteswap pdata,pdata
+	arg 0x7ff,temp
+	iand temp,pdata
+	branch loadcode_iic, zero
+	call otp_set_addr
+	arg otpd_read_code,regc
+	call get_iv,user
+	call load_storage
+	fetch 1,mem_ucode_status
+	bbit0 0,loadcode_otp_2			// crc error, try again
+	
+loadcode_iic:
+	call otp_disable_chgpump
+	jam 0,mem_loadcode_times
+loadcode_iic_2:	
+	call loadcode_check_times
+	call clear_eeprom_size_2k
+	fetch 1,mem_otp_ucode_flag
+	bbit1 otp_uflag_skip_eep,loadcode_spi
+	call loadcode_iic_by_eeprom
+	nbranch loadcode_iic_eeprom_2k,match
+	fetch 1,mem_ucode_status
+	bbit0 0,loadcode_iic_2			// crc error, try again
+	branch loadcode_hci
+loadcode_iic_eeprom_2k:
+	call set_eeprom_size_2k
+	fetch 1,mem_otp_ucode_flag
+	bbit1 otp_uflag_skip_eep,loadcode_spi
+	call loadcode_iic_by_eeprom
+	nbranch loadcode_spi,match
+	fetch 1,mem_ucode_status
+	bbit0 0,loadcode_iic_2			// crc error, try again
+	branch loadcode_hci
+	
+loadcode_spi:
+	jam 0,mem_loadcode_times
+loadcode_spi_2:
+	call loadcode_check_times
+	fetch 1,mem_otp_ucode_flag
+	bbit1 otp_uflag_skip_flash, loadcode_hci
+	setarg 0x0
+	store 3,mem_addr_hi
+	call spid_init_flash
+	arg spid_load_flash,regc
+	call read_first_block
+	call load_storage
+	nbranch loadcode_hci,match
+	fetch 1,mem_ucode_status
+	bbit0 0,loadcode_spi_2			// crc error, try again
+
+loadcode_hci:
+	bmark1 mark_otp_encrypt,loadcode_hci_enc
+	call clear_key_buf
+loadcode_hci_enc:
+	fetch 1,mem_otp_ucode_flag
+	bbit0 otp_uflag_hci,clear_key_buf
+	hjam 0x21,core_clkoff			// enable debug uart
+	call hci_init
+loadcode_hci_loop:
+	call hci_rx_packet
+	branch loadcode_hci_loop
+
+clear_key_buf:
+	setarg 0
+	store 8,mem_ucode_keybuf
+	store 8,mem_ucode_keybuf+8
+	force regidx_key,regext_index
+	call aes_clear
+	hjam 0x21,core_clkoff		// enable debug uart
+	rtn
+	
+
+loadcode_iic_by_eeprom:
+	setarg 0x0
+	store 2,mem_addr_mi
+	arg iicd_read_eep,regc
+	call iicd_init_12m
+	call read_first_block
+	branch load_storage
+
+
+loadcode_check_times:
+	fetch 1,mem_loadcode_times
+	increase 1,pdata
+	sub pdata,3,null
+	nbranch loadcode_error,positive
+	store 1,mem_loadcode_times
+	rtn
+
+loadcode_error:
+	call clear_key_buf
+	call ice_break
+	rtn
+
+
+/* true flag is set into status */
+set_ucode_status:
+	fetch 1,mem_ucode_status
+	lshift pdata,pdata
+	setflag true,0,pdata
+	isolate0 15,rega
+	rtn true
+	store 1,mem_ucode_status
+	rtn
+
+	/* queue is bit position of hw done status */
+decrypt_code:
+	hfetch 1,core_gpio_key2
+	rtnbit0 1
+	branch decrypt_code_skip	/* skip to key generation at first for speed */
+decrypt_code_loop:
+	hfetch 1,core_dma_status
+	qisolate1 pdata
+	rtn true
+decrypt_code_skip:
+	hfetch 1,core_misc_status
+	bbit0 1,decrypt_code_loop
+	call do_aes_cbc
+	branch decrypt_code_loop
+
+
+
+load_ucode:
+	fetch 2,mem_patch_ptr
+	rtn blank
+	hjam 0x80, core_ucode_ctrl
+	hjam 0,core_ucode_hi
+	hjam 0,core_ucode_low
+	fetcht 2,mem_patch_len
+	lshift2 temp,loopcnt
+	iforce contr
+load_ucode_loop:
+	ifetch 1,contr
+	hstore 1,core_ucode_data
+	loop load_ucode_loop
+	hjam 0x0, core_ucode_ctrl
+	rtn
+
+
+/* ===================== SPI dma ======================= */
+
+spid_init:
+	bpatchx patch31_5,mem_patch31
+	call spid_init_common
+	branch twspi_enable
+
+spid_init2:
+	call spid_init_common
+	call twspi_disable
+	branch twspi_enable2
+	
+spid_init_common:
+	fetch 1,mem_spi_init_clk
+	hstore 1,core_spid_ctrl	// A7530 should at least 34, or write fail
+	fetch 1,mem_spi_init_delay_time
+	hstore 1,core_spid_delay	// 4us delay
+	setarg mem_spid_tbuf
+	hstore 2,core_spid_txaddr
+	setarg mem_spid_rbuf
+	hstore 2,core_spid_rxaddr
+	branch twspi_disable
+	
+spid_reset:
+	hfetch 1,core_spid_ctrl
+	set1 7,pdata
+	hstore 1,core_spid_ctrl
+	set0 7,pdata
+	hstore 1,core_spid_ctrl
+	rtn
+
+
+/* pdata 6:0 is reg address, 15:8 is data to write */
+spid_write_reg:
+	set1 7,pdata
+	store 2,mem_spid_tbuf
+	bpatchx patch31_6,mem_patch31
+	hjam 2,core_spid_txlen
+	hjam 0,core_spid_rxlen
+	hjam spid_start,core_misc_ctrl
+	branch wait_spid_done
+
+/* pdata 6:0 is reg address */
+spid_read_reg:
+	force 1,temp
+/* pdata 6:0 is burst reg address, temp is bytes to read */
+spid_read_regs:
+//	nop 100
+	store 1,mem_spid_tbuf
+	bpatchx patch31_7,mem_patch31
+	hjam 1,core_spid_txlen
+	hstoret 2,core_spid_rxlen
+	hjam spid_start,core_misc_ctrl
+	call wait_spid_done
+	fetch 1,mem_spid_rbuf
+	rtn
+
+wait_spid_done:
+	fetch 2,mem_afh_error_total
+	increase 1,pdata
+	store 2,mem_afh_error_total
+	hfetch 1,core_dma_status
+	bbit0 spid_done,wait_spid_done
+	rtn
+
+spid_init_flash:
+	hjam 0x40,core_spid_ctrl
+	hjam 0x0,core_spid_delay
+	hfetch 1,core_gpio_sel1
+	set0 0,pdata
+	set1 1,pdata
+	hstore 1,core_gpio_sel1
+	setarg 0
+	store 4,mem_spid_tbuf
+	rtn
+
+
+spid_unlock_flash:
+	setarg 0
+	hstore 2,core_spid_rxlen
+	setarg 1
+	hstore 2,core_spid_txlen
+	setarg mem_spid_tbuf
+	hstore 2,core_spid_txaddr
+	jam 6,mem_spid_tbuf
+	hjam spid_start,core_misc_ctrl
+	branch wait_spid_done
+
+
+/**
+ ******************************************************************************
+ ** \brief  write flash
+ **
+ ** \param [in]  rega: 2byte write ptr    
+ **			pdata:3byte flash address  
+ ** 			temp:2byte write data length
+ **
+ ** \retval user  0: flash buys 1:write flash setting complate
+ **
+ ******************************************************************************/
+
+flash_write:
+	disable user
+	copy pdata,regb
+	fetch 1,mem_spi_write_flash_sm
+	rtnne FLASH_SM_NO_BUYS
+	enable user
+	copy regb,pdata
+	branch flash_write_start
+
+
+flash_write_spi_sm_timer:
+	fetch 1,mem_spi_write_flash_sm 	
+	beq FLASH_SM_START,flash_write_start
+	beq FLASH_SM_ERASE_SECTOR,flash_erase_sector
+	beq FLASH_SM_WAIT_ERASE_SECTOR,flash_wait_erase_sector
+	beq FLASH_SM_WRITE_DATA,flash_write_data
+	beq FLASH_SM_WAIT_WRITE_DATA,flash_wait_write_data
+	rtn
+
+flash_write_start:
+	store 3,mem_spi_write_addr
+	copy rega,pdata
+	store 2,mem_spi_write_ptr
+	storet 2,mem_spi_write_len
+	jam FLASH_SM_ERASE_SECTOR,mem_spi_write_flash_sm
+	branch spid_init_flash
+flash_erase_sector:
+	call spid_init_flash
+	jam FLASH_SM_WAIT_ERASE_SECTOR,mem_spi_write_flash_sm
+	call spid_unlock_flash
+	arg mem_spid_tbuf,rega
+	fetch 3,mem_spi_write_addr
+	hjam 4,core_spid_txlen
+	arg FLASH_COMMAND_SECTOR_ERASE,temp
+	branch spid_write_flash_common
+	
+flash_wait_erase_sector:
+	call spid_init_flash
+	call spid_unlock_flash
+	setarg FLASH_READ_SATUS
+	call spid_read_reg
+	rtnbit1 FLASH_STATUS_WIP
+	jam FLASH_SM_WRITE_DATA,mem_spi_write_flash_sm
+	rtn
+flash_write_data:
+	call spid_init_flash
+	jam FLASH_SM_WAIT_WRITE_DATA,mem_spi_write_flash_sm
+	call spid_unlock_flash
+	call flash_data_preserve
+	call spid_write_flash
+	branch flash_data_recover
+flash_wait_write_data:
+	call spid_init_flash
+	call spid_unlock_flash
+	setarg FLASH_READ_SATUS
+	call spid_read_reg
+	rtnbit1 FLASH_STATUS_WIP
+	jam FLASH_SM_NO_BUYS,mem_spi_write_flash_sm
+	fetch 2,mem_cb_spi_flash_write_complate
+	branch callback_func
+flash_data_recover:
+	fetch 4,mem_temp
+	fetcht 2,mem_spi_write_ptr
+	increase -4,temp
+	istore 4,temp
+	rtn
+flash_data_preserve:
+	fetcht 2,mem_spi_write_ptr
+	copy temp,rega
+	increase -4,temp
+	ifetch 4,temp
+	store 4,mem_temp
+	fetcht 2,mem_spi_write_len
+	fetch 3,mem_spi_write_addr
+	rtn
+
+
+/* pdata is flash address, rega pointers to txdata(4 ahead bytes should be left), temp is length */
+spid_write_flash:
+	increase 4,temp
+	hstoret 2,core_spid_txlen
+	arg FLASH_COMMAND_WRITE_DATA,temp
+	increase -4,rega
+spid_write_flash_common:
+
+	istoret 1,rega
+	rshift16 pdata,temp
+	istoret 1,contw
+	rshift8 pdata,temp
+	istoret 1,contw
+	istore 1,contw
+	deposit rega
+	hstore 2,core_spid_txaddr
+	setarg 0
+	hstore 2,core_spid_rxlen
+	hjam spid_start,core_misc_ctrl
+	branch wait_spid_done
+
+
+/* temp is length, rega pointers to buf   */
+spid_read_flash:
+	hstoret 2,core_spid_rxlen
+	rshift16 pdata,temp
+	storet 1,mem_addr_hi
+	rshift8 pdata,temp
+	storet 1,mem_addr_mi
+	store 1,mem_addr_lo
+	setarg 4
+	hstore 2,core_spid_txlen
+	jam FLASH_COMMAND_READ_DATA,mem_spid_tbuf
+	setarg mem_spid_tbuf
+	hstore 2,core_spid_txaddr
+	deposit rega
+	hstore 2,core_spid_rxaddr
+	hfetch 1,core_spid_ctrl
+	isolate0 15,rega
+	setflag true,6,pdata
+	hstore 1,core_spid_ctrl
+	hjam spid_start,core_misc_ctrl
+spi_read_flash_wait:
+	hfetch 1,core_dma_status
+	bbit1 7,spi_read_flash_wait			// waiting for spid write
+	arg spid_done,queue
+	branch wait_spid_done
+
+
+/* temp is length, rega pointers to buf  */
+spid_load_flash:
+	hstoret 2,core_spid_rxlen
+	setarg 4
+	hstore 2,core_spid_txlen
+	jam 3,mem_spid_tbuf
+	setarg mem_spid_tbuf
+	hstore 2,core_spid_txaddr
+	deposit rega
+	hstore 2,core_spid_rxaddr
+	hfetch 1,core_spid_ctrl
+	isolate0 15,rega
+	setflag true,6,pdata
+	hstore 1,core_spid_ctrl
+	hjam spid_start,core_misc_ctrl
+spi_load_flash_wait:
+	hfetch 1,core_dma_status
+	bbit1 7,spi_load_flash_wait			// waiting for spid write
+	arg spid_done,queue
+	call decrypt_code
+	call wait_spid_done
+	isolate1 spid_crcok,pdata
+	call set_ucode_status
+	fetch 1,mem_addr_hi
+	lshift16 pdata,regb
+	fetch 1,mem_addr_mi
+	lshift8 pdata,pdata
+	ior regb,regb
+	fetch 1,mem_addr_lo
+	ior regb,pdata
+	iadd temp,pdata
+	store 1,mem_addr_lo
+	rshift8 pdata,pdata
+	store 1,mem_addr_mi
+	rshift8 pdata,pdata
+	store 1,mem_addr_hi
+	rtn
+
+/*****************************************************************************
+*soft reset chip
+*****************************************************************************/
+soft_reset_chip:
+	hjam 1,core_reset
+	rtn
+
+
+
+/* ===================== I2C dma ======================= */
+
+iic_init_390k:	//390khz
+	hjam 12,core_iicd_scl_low
+	hjam 13,core_iicd_scl_high
+	hjam 13,core_iicd_start_setup
+	hjam 13,core_iicd_start_hold
+	hjam 13,core_iicd_stop_setup
+	hjam 12,core_iicd_data_setup
+  	branch iicd_init_gpio	
+
+
+iicd_init_12m:
+	hjam 5,core_iicd_scl_low
+ 	hjam 7,core_iicd_scl_high
+	hjam 7,core_iicd_start_setup
+	hjam 7,core_iicd_start_hold
+	hjam 7,core_iicd_stop_setup
+	hjam 5,core_iicd_data_setup
+iicd_init_gpio:	
+	hfetch 1,core_gpio_pu3
+	or_into 0xc0,pdata
+	hstore 1,core_gpio_pu3
+	hfetch 1,core_gpio_sel1
+	or_into 0x10,pdata
+	hstore 1,core_gpio_sel1
+	rtn
+
+
+
+wait_iicd_done:
+	hfetch 1,core_dma_status
+	bbit0 iicd_done,wait_iicd_done
+	rtn
+
+/*
+pdata is tx length
+rega is points to tx buffer
+regb is points to rx buffer
+temp is rx length
+*/
+iicd_read_data:
+	hstore 2,core_iicd_txlen
+	deposit rega
+	hstore 2,core_iicd_txaddr	
+	deposit regb
+	hstore 2,core_iicd_rxaddr
+	deposit temp	
+	hstore 2,core_iicd_rxlen
+	arg 1,temp
+	nsetflag blank,1,temp
+	hstore 1,core_iicd_ctrl
+	hjam iicd_start,core_misc_ctrl
+	branch wait_iicd_done
+
+
+set_eeprom_size_2k:
+	set1 mark_eeprom_size,mark
+	jam 0x08,mem_eeprom_block_size
+	rtn
+
+clear_eeprom_size_2k:
+	set0 mark_eeprom_size,mark
+	jam 0x20,mem_eeprom_block_size
+	rtn
+
+
+iicd_read_eep_data_size_2k:
+ 	fetch 1,mem_eeprom_base
+	iadd regb,pdata
+	store 1,mem_addr_mi
+	branch iicd_read_eep_size_2k
+
+iicd_read_eep_size_2k_lcadcode:
+	fetch 2,mem_addr_mi
+	byteswap pdata,pdata
+	store 1,mem_addr_mi
+	
+//length:temp 
+//mem ptr:rega
+//eeprom addr:pdata
+iicd_read_eep_size_2k:
+ 	setarg 3
+	hstore 2,core_iicd_txlen
+	jam 0xa0,mem_iicd_tbuf
+	jam 0xa1,mem_iicd_tbuf+2
+	branch iicd_read_eep_common
+
+
+//length:temp 
+//mem ptr:rega
+//eeprom addr:regb
+iicd_write_protect_eep_data:
+	storet 2,mem_temp
+	call iicd_eeprom_write_enable
+	fetcht 2,mem_temp
+	call iicd_write_eep_data
+	branch iicd_eeprom_write_disable
+	
+iicd_eeprom_write_enable:
+	fetch 1,mem_eeprom_wp_gpio
+	rtneq GPIO_DISABLE
+	bbit0 6,iicd_wp_gpio_output_low
+	setarg 150000
+	call sleep
+iicd_wp_gpio_output_low:
+	fetcht 1,mem_eeprom_wp_gpio
+	branch gpio_out_active
+	
+iicd_eeprom_write_disable:
+	fetcht 1,mem_eeprom_wp_gpio
+	branch gpio_out_inactive
+	
+//length:temp 
+//mem ptr:rega
+//eeprom addr offset:regb
+iicd_read_eep_data:
+	bpatchx patch32_0,mem_patch32
+	bmark1 mark_eeprom_size,iicd_read_eep_data_size_2k
+	fetch 2,mem_eeprom_base
+	iadd regb,pdata
+	byteswap pdata,pdata
+	store 2,mem_addr_mi
+
+/* rega pointers to buf, temp is length  */
+iicd_read_eep:
+	bpatchx patch32_1,mem_patch32
+	bmark1 mark_eeprom_size,iicd_read_eep_size_2k_lcadcode
+	setarg 4
+	hstore 2,core_iicd_txlen
+	jam 0xa0,mem_iicd_tbuf
+	jam 0xa1,mem_iicd_tbuf+3
+iicd_read_eep_common:	
+	setarg mem_iicd_tbuf
+	hstore 2,core_iicd_txaddr
+	hstoret 2,core_iicd_rxlen
+	deposit rega
+	hstore 2,core_iicd_rxaddr
+	setarg 2
+	isolate0 15,rega
+	setflag true,0,pdata
+	hstore 1,core_iicd_ctrl
+	hjam iicd_start,core_misc_ctrl
+	arg iicd_done,queue
+	call decrypt_code
+	call wait_iicd_done
+	isolate1 iicd_crcok,pdata
+	call set_ucode_status
+	bmark1 mark_eeprom_size,iicd_read_eep_load_code_size_2k
+	fetch 2,mem_addr_mi
+	byteswap pdata,pdata
+	iadd temp,pdata
+	byteswap pdata,pdata
+	store 2,mem_addr_mi
+	rtn
+
+iicd_read_eep_load_code_size_2k:
+	fetch 1,mem_addr_mi
+	iadd temp,pdata
+	byteswap pdata,pdata
+	store 2,mem_addr_mi
+	rtn
+	
+
+//length:temp 
+//mem ptr:rega
+//eeprom addr offset:regb
+iicd_write_eep_data:
+	fetch 2,mem_eeprom_base
+	iadd regb,pdata
+
+//cuur ptr:pdata length:temp buf:rega
+iicd_write_ota_data:
+	store 2,mem_pdatatemp //curr ptr
+	bpatchx patch32_2,mem_patch32
+	storet 2,mem_temp	//len
+	copy rega,pdata
+	store 2,mem_contr
+iicd_write_eep_loop:
+	call iicd_eep_transparency
+
+	fetcht 2,mem_regb
+	fetch 2,mem_contr
+	copy pdata,rega
+	fetch 2,mem_pdatatemp
+	
+	call iicd_write_eep
+	
+	fetch 2,mem_regb
+	fetcht 2,mem_contr
+	iadd temp,temp
+	storet 2,mem_contr
+	fetcht 2,mem_pdatatemp
+	iadd temp,temp
+	storet 2,mem_pdatatemp
+	fetch 2,mem_temp
+	nbranch iicd_write_eep_loop,blank
+	rtn
+	
+//in:
+//1.size 2.len 3.src 4.des
+//mem_regc page's area
+//mem_pdatatemp curr ptr
+//mem_temp all len      
+//mem_regb curr len
+iicd_eep_transparency:
+	bpatchx patch32_3,mem_patch32
+	fetch 1,mem_eeprom_block_size
+	increase -1,pdata
+	fetcht 2,mem_pdatatemp
+	ior temp,pdata
+	increase 1,pdata
+	store 3,mem_regc
+
+	fetch 2,mem_temp
+	iadd temp,pdata
+
+	fetcht 3,mem_regc
+	isub temp,pdata
+	nbranch iicd_eep_deal_short_packet,positive
+	store 2,mem_temp
+	fetch 3,mem_regc
+	fetcht 2,mem_pdatatemp
+	isub temp,pdata
+	store 2,mem_regb
+	rtn
+iicd_eep_deal_short_packet:
+	fetch 2,mem_temp
+	store 2,mem_regb
+	setarg 0
+	store 2,mem_temp
+	rtn
+
+iicd_write_eep_size_2k:
+	increase 2,temp
+	hstoret 2,core_iicd_txlen
+	increase -2,rega
+	ifetcht 3,rega
+	copy temp,regb
+	arg 0xa0,temp
+	istoret 1,rega
+//	byteswap pdata,pdata
+	istore 1,contw
+	branch iicd_write_eep_common
+
+	/* pdata is eeprom address, rega pointers to txdata(3 ahead bytes should be left), temp is length */
+iicd_write_eep:
+	copy pdata,regb
+	bpatchx patch32_4,mem_patch32
+	bmark1 mark_eeprom_size,iicd_write_eep_size_2k
+	copy regb,pdata
+	increase 3,temp
+	hstoret 2,core_iicd_txlen
+	increase -3,rega
+	ifetcht 3,rega
+	copy temp,regb
+	arg 0xa0,temp
+	istoret 1,rega
+	byteswap pdata,pdata
+	istore 2,contw
+iicd_write_eep_common:	
+	deposit rega
+	hstore 2,core_iicd_txaddr
+	setarg 0
+	hstore 2,core_iicd_rxlen
+	hjam 1,core_iicd_ctrl
+	hjam iicd_start,core_misc_ctrl
+	call wait_iicd_done
+	copy regb,pdata
+	istore 3,rega
+	
+iic_check_eeprom_standby:
+	bpatchx patch32_5,mem_patch32
+	jam 0,mem_iicd_tbuf+3
+iic_check_eeprom_standby_wait:
+	setarg 1
+	hstore 2,core_iicd_txlen
+	jam 0xa0,mem_iicd_tbuf
+	setarg mem_iicd_tbuf
+	hstore 2,core_iicd_txaddr
+	setarg 0
+	hstore 2,core_iicd_rxlen
+	hstore 2,core_iicd_rxaddr
+	setarg 3
+	hstore 1,core_iicd_ctrl
+	hjam iicd_start,core_misc_ctrl
+	call wait_iicd_done
+	hfetch 1,core_dma_status
+	rtnbit0 iicd_ack
+	nop 1500
+	fetch 1,mem_iicd_tbuf+3
+	increase 1,pdata
+	store 1,mem_iicd_tbuf+3
+	sub pdata,40,null
+	nrtn positive//polling timeout 6ms
+	branch iic_check_eeprom_standby_wait
+
+/* ===================== OTP ======================= */
+
+otp_enable_chgpump:
+	hjam 0x70,rfen_chgpump
+	nop param_chgpump_delay
+	rtn
+
+otp_disable_chgpump:
+	hjam 0x30,rfen_chgpump
+	rtn
+	
+otp_set_addr:
+	lshift3 pdata,pdata
+	hstore 2,core_otp_addr
+	hjam 0,core_otpd_ctrl
+	rtn	
+
+/* pdata = otp address, rega pointers data, loopcnt is count */
+otp_write:
+	call otp_set_addr
+	call otp_ce
+otp_program:
+	ifetcht 1,rega
+	increase 1,rega
+	force 0,queue
+otp_program_bit:
+	qisolate0 temp
+	branch otp_skip_0,true
+	hfetch 1,core_otp_din
+	set1 6,pdata				/* din */
+	set1 7,pdata				/* dle */
+	hstore 1,core_otp_din
+	hjam 0x02,core_otp_ctrl	/* web */
+	hjam 0x82,core_otp_ctrl
+	set0 7,pdata				/* dle */
+	hstore 1,core_otp_din
+	hjam 0x8a,core_otp_ctrl	/* pgmen */
+	nop 11
+	hjam 0xca,core_otp_ctrl	/* vppen */
+	nop 33
+	hjam 0x4a,core_otp_ctrl	/* web 2nd */
+	nop 44
+	hjam 0xca,core_otp_ctrl	/* release web */
+	nop 22
+	hjam 0x8a,core_otp_ctrl	/* release vppen */
+	nop 33
+	hjam 0x82,core_otp_ctrl	/* release pgmen */
+	nop 1
+	hjam 0x92,core_otp_ctrl	/* pgmvfy */
+	nop 10
+	hjam 0xb2,core_otp_ctrl	/* readen */
+	hfetch 1,core_otp_rdata
+	hjam 0x92,core_otp_ctrl	/* release readen */
+	nop 1
+	hjam 0x82,core_otp_ctrl	/* release pgmvfy */
+	qisolate0 pdata
+	branch otp_program_bit,true	/* program error */
+otp_skip_0:
+	hfetch 2,core_otp_addr
+	increase 1,pdata
+	hstore 2,core_otp_addr
+	increase 1,queue
+	compare 8,queue,0xf
+	nbranch otp_program_bit,true
+	loop otp_program
+	hjam 0x83,core_otp_ctrl
+	rtn
+
+otp_ce:
+	hjam 0x82,core_otp_ctrl	/* ceb */
+	nop 12
+	hjam 0x80,core_otp_ctrl	/* rstn */
+	hjam 0x82,core_otp_ctrl	/* release rstn */
+	nop 150					/* waiting for vdd25 stable */
+	rtn
+
+	/* rega points to data, temp is count */
+otpd_read_init:
+	call otp_ce
+	hjam 0xa2,core_otp_ctrl	/* readen */
+	deposit rega
+	hstore 2,core_otpd_addr
+	set1 11,temp
+	isolate0 15,pdata
+	setflag true,15,temp
+	hstoret 2,core_otpd_len
+	hjam otpd_start,core_misc_ctrl
+	rtn
+
+otpd_wait_end:
+	hfetch 1,core_dma_status
+	bbit0 otpd_done,otpd_wait_end
+	rtn
+	
+	/* pdata=otp address, rega points to data, temp is count */
+otpd_read_data:
+	call otp_set_addr
+	call otpd_read_init
+	call otpd_wait_end
+	hjam 0x83,core_otp_ctrl	/* release ceb */
+	rtn
+
+
+
+/* rega pointers to buf, temp is length */
+otpd_read_code:	
+	hfetch 2,core_current_otp_addr
+	hstore 2,core_otp_addr
+	call otpd_read_init
+	arg otpd_done,queue
+	call decrypt_code
+	call otpd_wait_end
+	isolate1 otpd_crcok,pdata	
+	call set_ucode_status
+	hjam 0x83,core_otp_ctrl	/* release ceb */
+	rtn
+
+/* ===================== uart dma ======================= */
+uartd_prepare_tx:
+	hfetch 2,core_uart_twptr
+	iforce contwu
+	rtn
+
+uartd_send:
+	deposit contwu
+	hstore 2,core_uart_twptr
+	rtn
+
+uartd_rxdone:
+	deposit contru
+	hstore 2,core_uart_rrptr
+	rtn
+
+uartd_prepare_rx:
+	hfetch 2,core_uart_rrptr
+	copy pdata,contru
+	rtn
+
+uart_set_baud_by_mem:
+	fetch uart_baud_len,mem_baud
+	hstore uart_baud_len,core_uart_baud
+	rtn
+
+uart_copy_tx_bytes_fast:
+	deposit loopcnt
+	rtn blank
+uart_copy_tx_bytes_fast_loop:
+	increase -8,loopcnt
+	call uart_tx_8_bytes,positive
+	rtn zero
+	branch uart_copy_tx_bytes_fast_loop,positive
+	increase 8,loopcnt
+uart_copy_tx_bytes_fast_loop_four:
+	increase -4,loopcnt
+	call uart_tx_4_bytes,positive
+	rtn zero
+	branch uart_copy_tx_bytes_fast_loop_four,positive
+	increase 4,loopcnt
+	branch uart_copy_tx_bytes
+
+uart_tx_8_bytes:
+	ifetch 8,contr
+	istore 8,contwu
+	rtn
+
+uart_tx_4_bytes:
+	ifetch 4,contr
+	istore 4,contwu
+	rtn
+
+uart_copy_tx_bytes:
+	deposit loopcnt
+	rtn blank
+uart_copy_tx_bytes_loop:
+	ifetch 1,contr
+	istore 1,contwu
+	loop uart_copy_tx_bytes_loop
+	rtn
+
+uart_copy_rx_bytes_fast:
+	deposit loopcnt
+	rtn blank
+uart_copy_rx_bytes_fast_loop:
+	increase -8,loopcnt
+	call uart_rx_8_bytes,positive
+	rtn zero
+	branch uart_copy_rx_bytes_fast_loop,positive
+	increase 8,loopcnt
+uart_copy_rx_bytes_fast_loop_four:
+	increase -4,loopcnt
+	call uart_rx_4_bytes,positive
+	rtn zero
+	branch uart_copy_rx_bytes_fast_loop_four,positive
+	increase 4,loopcnt
+	branch uart_copy_rx_bytes
+
+uart_rx_8_bytes:
+	ifetch 8,contru
+	istore 8,contw
+	rtn
+
+uart_rx_4_bytes:
+	ifetch 4,contru
+	istore 4,contw
+	rtn
+
+
+uart_copy_rx_bytes:
+	deposit loopcnt
+	rtn blank
+uart_copy_rx_bytes_loop:
+	ifetch 1,contru
+	istore 1,contw
+	loop uart_copy_rx_bytes_loop
+	rtn
+
+
+uart_copy_rx2tx:
+	deposit loopcnt
+	rtn blank
+uart_copy_rx2tx_loop:
+	ifetch 1,contru
+	istore 1,contwu
+	loop uart_copy_rx2tx_loop
+	rtn
+
+
+/* ===================== eeprom data ======================= */
+
+app_store_nvram_event:
+	jam BT_EVT_STORE_NVRAM,mem_fifo_temp
+	branch ui_ipc_send_event
+
+check_51cmd_store_reconn_info:
+check_51cmd_update_device_record:
+	bpatchx patch32_6,mem_patch32
+	fetch 1,mem_nv_data_number
+	rtn blank		// not nv data
+	call check_nvram
+	call init_device_list,zero
+	call nvram_find_addr_from_bd_list
+write_device_record:
+	fetch 1,mem_nv_data_number
+	icopy regc
+	fetcht 2,mem_nv_data_ptr
+	storet 2,mem_list_item_ptr
+write_device_loop_find:
+	copy regc,pdata
+	branch app_store_nvram_event,blank  //EEPROM
+	increase -1,regc
+	copy temp,rega
+	ifetch 1,rega
+	fetcht 1,mem_select_list_item
+	isub temp,null
+	call set_index_finded_device,zero
+	branch write_device_loop_find0,positive
+	ifetch 1,rega
+	increase 1,pdata
+	istore 1,rega
+write_device_loop_find0:
+	fetcht 2,mem_list_item_ptr
+	increase NV_DATA_LEN,temp
+	storet 2,mem_list_item_ptr
+	branch write_device_loop_find
+
+set_index_finded_device:
+	setarg 0
+	istore 1,rega
+	fetch 1,mem_temp_reconn_record
+	istore 1,contw	
+	bne REC_3_MODE,set_index_finded_device_ble_mode
+	arg mem_link_key,regb
+set_index_find_device_MASTER_ADDR:
+	ifetch 6,contr
+	istore 8,contw
+	setarg 0
+	istore 8,contw
+	copy regb,contr
+store_rec_data_common:
+	call memcpy16
+	force 1,null
+	rtn
+
+set_index_finded_device_ble_mode:
+	beq REC_4_MODE_RANDOM_RESOLVABLE_PRIVATE_ADDRESS,set_index_finded_device_IRK
+	beq REC_4_MODE_RANDOM_NON_RESOLVABLE_PRIVATE_ADDRESS,set_index_finded_device_EDIV
+	arg mem_le_ltk,regb
+	branch set_index_find_device_MASTER_ADDR
+
+set_index_finded_device_IRK:
+	arg mem_le_irk,contr
+	call memcpy16
+store_ble_rec_data_common:
+	arg mem_le_ltk,contr
+	branch store_rec_data_common
+
+set_index_finded_device_EDIV:
+	arg mem_le_rand,contr
+	call memcpy16
+	branch store_ble_rec_data_common
+
+
+nvram_find_addr_from_bd_list:
+	call disable_user
+	fetch 1,mem_nv_data_number
+	rtn blank		// not nv data
+	fetch 2,mem_ui_state_map
+	bbit1 UI_STATE_BT_CONNECTED,find_addr_from_bd_list_SPP_mode
+find_addr_from_bd_list_ble_mode:
+	bpatchx patch32_7,mem_patch32
+	fetch 1,mem_le_conn_peer_addr_type
+	beq MASTER_PUBLIC_ADDR,find_addr_from_bd_list_static_addr
+	fetch 1,mem_le_plap+5
+	compare 0xc0,pdata,0xc0
+	branch find_addr_from_bd_list_static_addr,true
+	compare 0x40,pdata,0xc0
+	branch find_addr_from_bd_list_random_addr,true
+	compare 0x00,pdata,0xc0
+	branch find_addr_from_bd_list_random_non_resolvable_private_address,true
+find_addr_from_bd_list_static_addr:
+	jam REC_4_MODE_STATIC_ADDRESS,mem_temp_reconn_record
+	fetch 6,mem_le_plap
+	branch find_addr_from_bd_list_common
+	
+find_addr_from_bd_list_random_non_resolvable_private_address:	
+	jam REC_4_MODE_RANDOM_NON_RESOLVABLE_PRIVATE_ADDRESS,mem_temp_reconn_record
+	branch find_addr_from_bd_list_common
+
+//input :pdata EDIV and rands
+find_addr_from_bd_list_random_addr:
+	jam REC_4_MODE_RANDOM_RESOLVABLE_PRIVATE_ADDRESS,mem_temp_reconn_record
+	branch find_addr_from_bd_list_common
+	
+//input :pdata EDIV and rands
+find_addr_from_bd_list_SPP_mode:
+	bpatchx patch33_0,mem_patch33
+	jam REC_3_MODE,mem_temp_reconn_record
+	fetch 6,mem_plap
+find_addr_from_bd_list_common:
+	store 6,mem_temp_reconn_record+1
+	fetch 2,mem_nv_data_ptr
+	ifetcht 1,pdata
+	pincrease 1
+	store 2,mem_list_item_ptr
+	storet 1,mem_select_list_item
+	fetch 1,mem_nv_data_number
+	icopy regc
+nvram_find_addr_from_list:
+	fetch 2,mem_list_item_ptr
+	copy pdata,rega
+	call nvram_find_addr_from_list_compare
+	rtn user
+	fetcht 2,mem_list_item_ptr
+	increase NV_DATA_LEN,temp
+	storet 2,mem_list_item_ptr
+	increase -1,temp
+	ifetch 1,temp
+	store 1,mem_select_list_item
+	increase -1,regc
+	nbranch nvram_find_addr_from_list,zero
+	fetch 1,mem_nv_data_number
+	pincrease DECREASED_ONE
+	store 1,mem_select_list_item
+	rtn
+nvram_find_addr_from_list_compare:
+	fetch 1,mem_temp_reconn_record
+	bne REC_3_MODE,find_addr_from_list_compare_ble_mode
+find_master_addr_from_list_compare:
+	arg mem_temp_reconn_record,regb
+	arg 7,loopcnt
+	call string_compare
+	branch enable_user,zero
+	rtn
+
+find_addr_from_list_compare_ble_mode:
+	beq REC_4_MODE_RANDOM_RESOLVABLE_PRIVATE_ADDRESS,find_irk_form_list_compare
+	beq REC_4_MODE_RANDOM_NON_RESOLVABLE_PRIVATE_ADDRESS,find_ediv_form_list_compare
+	branch find_master_addr_from_list_compare
+
+find_irk_form_list_compare:
+	ifetcht 1,rega
+	isub temp,null
+	nrtn zero
+	arg mem_le_prand,contw
+	arg 16,loopcnt
+	call clear_mem
+	fetch 3,mem_le_plap+3
+	store 3,mem_le_prand
+	call genernate_master_MacAddress
+	fetch 2,mem_le_aes_128+13
+	byteswap pdata,pdata
+	lshift8 pdata,temp
+	ifetch 1,contr
+	iadd temp,pdata
+	fetcht 3,mem_le_plap
+	isub temp,null
+	branch enable_user,zero
+	rtn
+
+
+genernate_master_MacAddress:
+	arg mem_le_prand ,contr
+	call load_data128
+//	arg mem_le_irk,contr
+	ifetch 1,rega
+	call load_regext
+	force 0x38,aes_ctrl
+	force 0x0,aes_ctrl
+	call wait_aes
+	arg mem_le_aes_128,contw
+	branch store_aes_result
+
+find_ediv_form_list_compare:
+	ifetcht 1,rega
+	isub temp,null
+	nrtn zero
+	copy contr,rega
+	add contr,8,regc
+	arg mem_le_rand,regb
+	arg 8,loopcnt
+	call string_compare
+	branch enable_user,zero
+	copy regc,rega
+	arg mem_le_irk,regb
+	arg 8,loopcnt
+	call string_compare
+	branch enable_user,zero
+	rtn
+
+check_nvram:
+	fetch 2,mem_nv_data_ptr
+	ifetcht 1,pdata
+	pincrease NV_DATA_LEN
+	ifetch 1,pdata
+	isub temp,null
+	rtn
+
+init_device_list:
+	fetch 1,mem_nv_data_number
+	icopy loopcnt
+	fetcht 2,mem_nv_data_ptr
+	setarg 0
+init_device_list_loop:
+	istore 1,temp
+	increase NV_DATA_LEN,temp
+	pincrease 1
+	loop init_device_list_loop
+	rtn
+
+load_device_list:
+	bpatchx patch33_1,mem_patch33
+	call nvram_find_addr_from_bd_list
+	fetch 1,mem_state
+	setflag user,state_combkey,pdata	/* we have link key */
+	store 1,mem_state
+	nbranch clear_key_exists,user
+	add rega,10,contr
+//	copy rega,contr
+	arg mem_link_key,contw
+	call  memcpy16
+	branch check_link_key_load
+clear_key_exists:
+	jam 0,mem_link_key_exists
+	rtn
+
+load_device_list_mode_4:
+	fetch 9,mem_le_ediv
+	branch clear_ltk_exists,blank
+	call nvram_find_addr_from_bd_list
+	nbranch clear_ltk_exists,user
+	fetch 2,mem_list_item_ptr
+	add pdata,1,contr
+	arg mem_le_irk,contw
+	call  memcpy16
+	arg mem_le_ltk,contw
+	call  memcpy16
+	jam 1,mem_ltk_exists
+	rtn
+
+clear_ltk_exists:
+	jam 0,mem_ltk_exists
+	rtn
+
+
+eeprom_store_le_reconn_info:
+	fetch 6,mem_le_plap
+	store 6,mem_temp_lap
+	jam REC_4_MODE,mem_record_bt_mode
+	branch eeprom_store_reconn_info
+eeprom_store_bd_reconn_info:
+	fetch 6,mem_plap
+	store 6,mem_temp_lap
+	jam REC_3_MODE,mem_record_bt_mode
+eeprom_store_reconn_info:
+	fetch 1,mem_device_option
+	beq dvc_op_module,check_51cmd_update_device_record
+	bbit1 dvc_op_mouse,mouse_store_remote_bdaddr
+	rtn
+	
+
+check_link_key_load:
+	fetch 8,mem_link_key
+	fetcht 8,mem_link_key+8
+	ior temp,pdata
+	rtn blank
+	jam 1,mem_link_key_exists
+	rtn
+	
+
+/* =============== GPIO CONTROL ================= */
+
+
+	//temp [4:0]=GPIO number, 0-31, 
+gpio_set_wake_by_current_state:
+	bpatchx patch33_2,mem_patch33
+	set1 7,temp
+	call gpio_get_bit
+	nsetflag true,7,temp
+	//branch gpio_set_wake
+	//fall through
+	
+	//temp [4:0]=GPIO number, 0-31, [7]=0, low active
+gpio_set_wake:
+	bpatchx patch33_3,mem_patch33
+	sub temp,UI_BUTTON_GPIO_DISABLE,null
+	rtn zero
+	isolate0 7,temp
+	and temp,0x1f,queue
+	fetch 4,mem_gpio_wakeup_low
+	qsetflag true,pdata
+	store 4,mem_gpio_wakeup_low
+	fetch 4,mem_gpio_wakeup_high
+	nqsetflag true,pdata
+	store 4,mem_gpio_wakeup_high
+	rtn
+	
+	//temp [4:0]=GPIO number, 0-31, [7]=0, low active
+gpio_clr_wake:
+	bpatchx patch33_4,mem_patch33
+	sub temp,UI_BUTTON_GPIO_DISABLE,null
+	rtn zero
+	isolate0 7,temp
+	and temp,0x1f,queue
+	fetch 4,mem_gpio_wakeup_low
+	qset0 pdata
+	store 4,mem_gpio_wakeup_low
+	fetch 4,mem_gpio_wakeup_high
+	qset0 pdata
+	store 4,mem_gpio_wakeup_high
+	rtn
+
+
+gpio_config_input_nowake:
+	call gpio_clr_wake
+	branch gpio_config_input_without_wake
+
+	//temp [4:0]=GPIO number, 0-31, [7]=0, low active
+gpio_config_input:
+	sub temp,UI_BUTTON_GPIO_DISABLE,null
+	rtn zero
+	ncall gpio_set_wake,wake
+
+gpio_config_input_without_wake:
+	arg core_gpio_pd0,contw
+	call gpio_set_bit
+	setflip gpio_active_bit,temp
+	arg core_gpio_pu0,contw
+	call gpio_set_bit
+	set0 gpio_active_bit,temp
+	arg core_gpio_oe0,contw
+	branch gpio_set_bit
+
+
+gpio_set_high_impedance:
+	arg core_gpio_pd0,contw
+	call gpio_set_bit
+	set0 gpio_active_bit,temp
+	arg core_gpio_pu0,contw
+	call gpio_set_bit
+	set0 gpio_active_bit,temp
+	arg core_gpio_oe0,contw
+	branch gpio_set_bit
+
+
+	//temp [4:0]=GPIO number, 0-31, [7]=0, low active. set gpio to inactive state
+gpio_config_output:	
+	sub temp,UI_BUTTON_GPIO_DISABLE,null
+	rtn zero
+	setflip gpio_active_bit,temp
+	call gpio_out
+gpio_config_output0:
+	set1 gpio_active_bit,temp
+	arg core_gpio_oe0,contw
+	branch gpio_set_bit
+	
+gpio_common:
+	and temp,0x07,queue
+	rshift3 temp,pdata
+	and_into 3,pdata
+	iadd contw,contw
+	ifetch 1,contw
+	rtn
+
+gpio_check_active:
+	arg core_gpio_out0,contw
+	branch get_bit_common
+
+	
+	/* temp is gpio number, return true if gpio active */
+gpio_get_bit:
+	arg core_gpio_in,contw
+get_bit_common:
+	call gpio_common
+	isolate1 gpio_active_bit,temp
+	branch gpio_get_bit_reverse,true
+	qisolate0 pdata
+	rtn
+gpio_get_bit_reverse:
+	qisolate1 pdata
+	rtn
+
+gpio_out_inactive:
+	sub temp,UI_BUTTON_GPIO_DISABLE,null
+	rtn zero
+	isolate1 7,null
+	branch gpio_out_flag
+
+gpio_out_active:
+	sub temp,UI_BUTTON_GPIO_DISABLE,null
+	rtn zero
+	isolate0 7,null
+
+	/* temp is gpio number,  [7]=1,set out equa true flag if gpio active */
+gpio_out_flag:
+	setarg 0
+	nsetflag true,gpio_active_bit,pdata
+	ixor temp,temp
+	
+	/* temp is gpio number,0-31, [7]=out bit value */
+gpio_out:
+	arg core_gpio_out0,contw
+
+	//temp [4:0]=GPIO number, 0-31, [7]=bit value; contw is gpio reg base
+gpio_set_bit:
+	call gpio_common
+	isolate1 gpio_active_bit,temp
+	qsetflag true,pdata
+	istore 1,contw
+	rtn
+
+gpio_set_before_lpm_common:
+	arg -1,rega
+	hfetch 1,core_gpio_sel1
+	compare 0x02,pdata,0x03
+	call neglact4_from_23_pin,true	//spi
+
+	compare 0x01,pdata,0x03
+	call neglact2_form_25_pin,true	//two spi gpio25 26
+
+	compare 0x03,pdata,0x03
+	call neglact2_form_25_pin,true	//two spi gpio30 31
+	 	 
+	isolate1 2,pdata
+	call neglect2_from_6_pin,true	//uart
+	 
+	isolate1 3,pdata
+	call neglect4_from_9_pin,true	//spi
+
+	isolate1 4,pdata
+	call neglact2_form_30_pin,true	//IIC GPIO30 31
+
+	isolate1 6,pdata
+	nsetflag true,04,rega			//pwm0 gpio4
+
+	isolate1 7,pdata
+	nsetflag true,05,rega			//pwm1 gpio5
+
+	hfetch 1,core_gpio_sel2
+	isolate1 0,pdata
+	nsetflag true,27,rega			//pwm2 gpio27
+	isolate1 1,pdata
+	nsetflag true,28,rega			//pwm3 gpio28
+	isolate1 2,pdata
+	nsetflag true,03,rega			//pwm4 gpio03
+	isolate1 3,pdata
+	nsetflag true,08,rega			//pwm5 gpio08
+	isolate1 4,pdata
+	nsetflag true,20,rega			//pwm0 gpio20
+	isolate1 5,pdata
+	nsetflag true,21,rega			//pwm1 gpio21
+	isolate1 6,pdata
+	nsetflag true,22,rega			//pwm2 gpio22
+	isolate1 7,pdata
+	nsetflag true,23,rega			//pwm3 gpio23
+		
+	hfetch 1,core_gpio_sel
+	isolate1 0,pdata
+	nsetflag true,05,rega			//ADC GPIO05
+	isolate1 1,pdata
+	nsetflag true,06,rega			//ADC GPIO06
+	isolate1 2,pdata
+	nsetflag true,07,rega			//ADC GPIO07
+	isolate1 3,pdata
+	nsetflag true,18,rega			//ADC GPIO18
+	isolate1 4,pdata
+	nsetflag true,19,rega			//ADC GPIO19
+	isolate1 5,pdata
+	nsetflag true,20,rega			//ADC GPIO20
+	isolate1 6,pdata
+	nsetflag true,21,rega			//ADC GPIO21
+	isolate1 7,pdata
+	nsetflag true,22,rega			//ADC GPIO22
+	
+	hfetch 1,core_uart_ctrl
+	isolate1 4,pdata
+	call neglact2_form_2_pin,true
+	bpatchx patch33_5,mem_patch33
+
+	hfetch 4,core_gpio_pu0
+	hfetcht 4,core_gpio_pd0
+	ior temp,pdata
+	invert pdata,pdata
+	iand rega,pdata
+	//set0 4,pdata //revc
+	hstore 4,core_gpio_oe0
+	rtn
+	
+	
+neglect2_from_6_pin: //uart
+	 arg 6,queue
+	 branch neglect_2_pin
+neglect4_from_9_pin:
+	 arg 9,queue
+	 branch neglact_4_pin
+neglact4_from_23_pin:
+	 arg 23,queue
+	 branch neglact_4_pin
+neglact2_form_25_pin:
+	 arg 25,queue
+	 branch neglect_2_pin
+neglact2_form_30_pin:
+	 arg 30,queue
+	 branch neglect_2_pin
+neglact2_form_2_pin:
+	 arg 2,queue
+	 branch neglect_2_pin
+neglact_1_pin:
+	arg 1,loopcnt
+	branch neglect_pin_loop
+neglact_4_pin:
+	 arg 4,loopcnt
+	 branch neglect_pin_loop
+neglect_2_pin:
+	 arg 2,loopcnt
+neglect_pin_loop:
+	 qset0 rega
+	 increase 1,queue
+	 loop neglect_pin_loop
+	 rtn
+
+
+
+
+
+
+/* ===================== sniff GPIO CONTROL ======================= */
+gpio_cfg_uart_tx_output:
+	call gpio_uart2gpio
+	arg UART_WAKEUP_TX,temp
+	branch gpio_config_output
+
+gpio_pu_uart_tx:
+	call gpio_cfg_uart_tx_output
+	arg UART_WAKEUP_TX,temp
+	branch gpio_out_inactive
+
+
+
+gpio_rx_config_input_with_pu:
+	call gpio_uart2gpio
+	hfetch 1, core_gpio_pu0
+	set1 UART_WAKEUP_RX,pdata
+	hstore 1,core_gpio_pu0
+	arg UART_WAKEUP_RX,temp
+	branch gpio_config_input
+	
+gpio_uart2gpio:
+	hfetch 1,core_gpio_sel1
+	and_into 0xfb,pdata
+	hstore 1,core_gpio_sel1
+	rtn
+
+gpio_check_uart_state:
+	hfetch 1,core_gpio_sel1
+	isolate1 2,pdata
+	rtn
+
+load_chip_option:
+	call otp_enable_chgpump
+	setarg OTP_CHIP_FUNCTIONS
+	arg mem_chip_functions,rega
+	arg 0x02,temp
+	call otpd_read_data
+	branch otp_disable_chgpump
+
+
+load_adc_init:
+	call otp_enable_chgpump
+	setarg otp_adc_io_0_5V_addr
+	arg mem_0_5_adc_io_data,rega
+	arg 14,temp
+	call otpd_read_data
+	branch otp_disable_chgpump
+
+
+//mem_adc_config_flag 0:vinlpm 1:Hvin 2: GPIO
+adc_init_data:
+	bpatchx patch33_6,mem_patch33
+
+	call load_adc_init
+	
+	fetch 1,mem_adc_config_flag
+	beq ADC_CONFIG_VINLPM,adc_init_data_vinlpm
+	beq ADC_CONFIG_HVIN,adc_init_data_hvin
+	beq ADC_CONFIG_GPIO,adc_init_data_io
+	rtn	
+
+adc_init_data_vinlpm:
+	fetcht 2,mem_otp_adc_flag
+	setarg OTP_ADC_FLAG
+	isub temp,null
+	branch adc_check_data_vinlpm,zero
+	setarg 0x4dfa
+	store 2,mem_3v_adc_vinlpm_data	
+	setarg 0x4894
+	store 2,mem_2v_adc_vinlpm_data
+	branch set_vdd_reference_voltage_1v
+
+adc_check_data_vinlpm:
+	fetch 2,mem_3v_adc_vinlpm_data
+	nbranch adc_check_2v_vinlpm,blank
+	setarg 0x4dfa
+	store 2,mem_3v_adc_vinlpm_data
+adc_check_2v_vinlpm:	
+	fetch 2,mem_2v_adc_vinlpm_data
+	nbranch set_vdd_reference_voltage_1v,blank
+	setarg 0x4894
+	store 2,mem_2v_adc_vinlpm_data
+set_vdd_reference_voltage_1v:
+	setarg 100
+	store 2,mem_reference_voltage //set reference voltage = 1V
+	rtn		
+
+adc_init_data_hvin:
+	fetcht 2,mem_otp_adc_flag
+	setarg OTP_ADC_FLAG
+	isub temp,null
+	branch adc_check_data_hvin,zero
+	setarg 0x5932
+	store 2,mem_5v_adc_hvin_data	
+	setarg 0x4323
+	store 2,mem_1v_adc_hvin_data
+	branch set_vdd_reference_voltage_4v
+
+adc_check_data_hvin:
+	fetch 2,mem_5v_adc_hvin_data
+	nbranch adc_check_1v_hvin,blank
+	setarg 0x5932
+	store 2,mem_5v_adc_hvin_data
+adc_check_1v_hvin:	
+	fetch 2,mem_1v_adc_hvin_data
+	nbranch set_vdd_reference_voltage_4v,blank
+	setarg 0x4323
+	store 2,mem_1v_adc_hvin_data
+set_vdd_reference_voltage_4v:
+	setarg 400
+	store 2,mem_reference_voltage //set reference voltage = 4V
+	rtn 	
+
+adc_init_data_io:
+	fetcht 2,mem_otp_adc_flag
+	setarg OTP_ADC_FLAG
+	isub temp,null
+	branch adc_check_data_io,zero
+	setarg 0x6946
+	store 2,mem_1v_adc_io_data	
+	setarg 0x5377
+	store 2,mem_0_5_adc_io_data
+	branch set_vdd_reference_voltage_0_5v
+
+adc_check_data_io:
+	fetch 2,mem_1v_adc_io_data
+	nbranch adc_check_0_5v_io,blank
+	setarg 0x6946
+	store 2,mem_1v_adc_io_data
+adc_check_0_5v_io:
+	fetch 2,mem_0_5_adc_io_data
+	nbranch set_vdd_reference_voltage_0_5v,blank
+	setarg 0x5377
+	store 2,mem_0_5_adc_io_data
+set_vdd_reference_voltage_0_5v:
+	setarg 50
+	store 2,mem_reference_voltage //set reference voltage = 0.5V
+	rtn	
+
+
+adc_set_mode:
+	fetch 1,mem_adc_config_flag
+	beq ADC_CONFIG_VINLPM,adc_check_vinlpm
+	beq ADC_CONFIG_HVIN,adc_check_hvin
+	beq ADC_CONFIG_GPIO,adc_check_gpio
+	rtn
+adc_check_vinlpm:
+	hjam 0xbf,rf_adc_mode	//read VINLPM voltage directly	
+	branch read_adc
+adc_check_hvin:
+	hjam 0xaf,rf_adc_mode	//read HVIN voltage directly
+	branch read_adc
+adc_check_gpio:
+	hjam 0x8f,rf_adc_mode
+	fetch 1,mem_adc_channel
+	hstore 1,rf_adc_ch
+	branch read_adc
+read_adc:
+	bpatchx patch33_7,mem_patch33
+	hfetch 1,core_uart_baud + 1
+	set1 7,pdata
+	hstore 1,core_uart_baud + 1 
+	hfetch 1,rf_adc_ch
+	or_into 0x30,pdata
+	hstore 1,rf_adc_ch
+	hjam 0x7c,rfen_adc
+	hjam 0xaa,rf_adc_gc
+	nop 5000
+	hfetcht 2,core_adc_sum
+	hfetch 1,core_uart_baud + 1
+	set0 7,pdata
+	hstore 1,core_uart_baud + 1
+	storet 2,mem_adc_current_value
+	rtn
+
+vdd_calculate_by_mode:
+	bpatchx patch34_0,mem_patch34
+	fetch 1,mem_adc_config_flag
+	beq ADC_CONFIG_VINLPM,vdd_calculate_vinlpm
+	beq ADC_CONFIG_HVIN,vdd_calculate_hvin
+	beq ADC_CONFIG_GPIO,vdd_calculate_io
+	rtn
+
+vdd_calculate_vinlpm:
+	fetch 2,mem_3v_adc_vinlpm_data
+	fetcht 2,mem_2v_adc_vinlpm_data
+	arg 200,regc
+	branch vdd_calculate
+
+vdd_calculate_hvin:
+	fetch 2,mem_5v_adc_hvin_data
+	fetcht 2,mem_1v_adc_hvin_data
+	arg 100,regc
+	branch vdd_calculate
+
+vdd_calculate_io:
+	fetch 2,mem_1v_adc_io_data
+	fetcht 2,mem_0_5_adc_io_data
+	arg 50,regc
+	branch vdd_calculate
+	
+vdd_calculate:
+	isub temp,rega
+	fetch 2,mem_adc_current_value
+	isub temp,pdata
+	nbranch vdd_calculate1,positive
+	fetcht 2,mem_reference_voltage
+	imul32 temp,regb
+	copy regc,pdata
+	imul32 rega,pdata
+	iadd regb,pdata
+vdd_calculate2:
+	idiv rega
+	call wait_div_end
+	quotient pdata	
+	rtn
+
+vdd_calculate1:
+	copy temp,pdata
+	fetcht 2,mem_adc_current_value
+	isub temp,pdata
+	fetcht 2,mem_reference_voltage
+	imul32 temp,regb
+	copy regc,pdata
+	imul32 rega,pdata
+	isub regb,pdata
+	branch vdd_calculate2
+
+/*	typedef struct
+*	{
+*		uint16 full_vol
+*		uint16 empty_vol
+*		uint16 low_vol
+*		uint16 now_vol
+*	}bat_calculate;
+*/
+//out:	pdata->bat percent
+adc_bat_percent_lowpower_out:
+	ifetch 8,rega
+	store 8,mem_pdatatemp
+	fetch 2,mem_pdatatemp
+	fetcht 2,mem_pdatatemp+2
+	isub temp,rega
+	fetch 2,mem_pdatatemp+6
+	isub temp,regb
+	fetcht 2,mem_pdatatemp+4
+	isub temp,null
+	ncall adc_set_low_power_flag,positive
+	mul32 regb,100,pdata
+	idiv rega
+	call wait_div_end
+	quotient pdata
+	call adc_set_no_power_flag,blank
+	rtn
+adc_set_low_power_flag:
+	fetch 1,mem_adc_power_flag
+	set1 0,pdata
+	store 1,mem_adc_power_flag
+	rtn
+adc_set_no_power_flag:
+	fetcht 1,mem_adc_power_flag
+	set1 1,temp
+	storet 1,mem_adc_power_flag
+	rtn
+
+ifdef SPI_SIMULATE
+/******************************simulate spi slave start**********************************/
+
+/*
+// Define SPI struct, gpio config
+mem_spi_simulate_struct:
+02	#cs
+03	#sclk
+04	#mosi
+05	#miso
+08	#motion
+*/
+
+/*
+Brief: spi_simulate_init_slave
+Input: None
+Output: None
+Return: None
+Brief: cs_gpio,sclk_gpio,mosi_gpio : input
+	miso_gpio : output
+*/
+spi_simulate_init_slave:
+	call spi_simulate_variable_release_slave
+	branch spi_simulate_gpio_config_slave
+
+spi_simulate_variable_release_slave:
+	arg mem_spi_simulate_read_byte_slave,contw
+	arg 53,loopcnt
+	call buffer_release
+	arg mem_spi_simulate_write_byte_slave,contw
+	arg 54,loopcnt
+	branch buffer_release
+
+buffer_release:
+	setarg 0
+buffer_release_loop:
+	istore 1,contw
+	loop buffer_release_loop
+	rtn
+	
+spi_simulate_gpio_config_slave:
+	fetcht 1,mem_spi_simulate_cs_gpio
+	call gpio_config_input
+	fetcht 1,mem_spi_simulate_sclk_gpio
+	call gpio_config_input
+	fetcht 1,mem_spi_simulate_mosi_gpio
+	call gpio_config_input
+	fetcht 1,mem_spi_simulate_miso_gpio
+	call gpio_config_output
+	fetcht 1,mem_spi_simulate_motion_gpio
+	call gpio_config_output
+	branch spi_simulate_motion_disable
+
+spi_simulate_motion_enable:
+	fetcht 1,mem_spi_simulate_motion_gpio
+	branch gpio_out_inactive
+spi_simulate_motion_disable:
+	fetcht 1,mem_spi_simulate_motion_gpio
+	branch gpio_out_active
+	
+/*
+Brief: spi_simulate_read_byte_slave
+Input: rega: read length
+Output: mem_spi_simulate_read_byte_slave: read buffer
+Return: None
+Brief: when the cs_gpio is low level,slave reads data from master at the rising edge of the sclk gpio
+*/
+spi_simulate_read_byte_slave:
+	copy rega,pdata
+	store 1,mem_spi_simulate_read_length_slave
+	fetcht 1,mem_spi_simulate_cs_gpio
+	call gpio_get_bit
+	nrtn true
+spi_simulate_read_byte_slave1:	
+	jam 0,mem_spi_simulate_read_byte_slave_temp
+	arg 8,loopcnt
+spi_simulate_read_byte_slave_loop:
+	fetcht 1,mem_spi_simulate_cs_gpio
+	call gpio_get_bit
+	nbranch spi_simulate_read_byte_slave_end,true
+	
+	fetcht 1, mem_spi_simulate_sclk_gpio
+	call gpio_get_bit
+	branch spi_simulate_read_byte_slave_loop,true	
+	fetch 1,mem_spi_simulate_read_byte_slave_temp
+	lshift pdata,pdata
+	store 1,mem_spi_simulate_read_byte_slave_temp
+	fetcht 1, mem_spi_simulate_mosi_gpio
+	call gpio_get_bit
+	ncall spi_simulate_read_byte_or_one,true
+spi_simulate_read_byte_slave_loop1:	
+	fetcht 1,mem_spi_simulate_cs_gpio
+	call gpio_get_bit
+	nbranch spi_simulate_read_byte_slave_end,true
+
+	fetcht 1, mem_spi_simulate_sclk_gpio
+	call gpio_get_bit
+	nbranch spi_simulate_read_byte_slave_loop1,true
+	loop spi_simulate_read_byte_slave_loop
+	
+	fetcht 1,mem_spi_simulate_read_length_slave_temp
+	setarg mem_spi_simulate_read_byte_slave
+	iadd temp,contw
+	copy contw,regb
+	increase 1,temp
+	storet 1,mem_spi_simulate_read_length_slave_temp
+	fetch 1,mem_spi_simulate_read_byte_slave_temp
+	copy regb,contw
+	istore 1,contw
+
+	fetch 1,mem_spi_simulate_read_length_slave
+	increase -1,pdata
+	store 1,mem_spi_simulate_read_length_slave
+	nbranch spi_simulate_read_byte_slave1,blank
+	
+spi_simulate_read_byte_slave_loop2:	
+	fetcht 1, mem_spi_simulate_cs_gpio
+	call gpio_get_bit
+	nbranch spi_simulate_read_byte_slave_loop2,true
+spi_simulate_read_byte_slave_end:	
+	jam 0,mem_spi_simulate_read_length_slave
+	jam 0,mem_spi_simulate_read_length_slave_temp
+	jam 0,mem_spi_simulate_read_byte_slave_temp
+	rtn
+
+spi_simulate_read_byte_or_one:
+	fetch 1,mem_spi_simulate_read_byte_slave_temp
+	or_into 1,pdata
+	store 1,mem_spi_simulate_read_byte_slave_temp
+	rtn
+
+
+/*
+Brief: spi_simulate_write_byte_slave
+Input: rega: write length;  write buffer:mem_spi_simulate_write_byte_slave;
+Output: None
+Return: None
+Brief: when the cs_gpio is low level,slave writes data to master at the falling edge of the sclk gpio
+*/
+spi_simulate_write_byte_slave:
+	copy rega,pdata
+	store 1,mem_spi_simulate_write_length_slave
+	jam 0,mem_spi_simulate_write_length_slave_temp
+	jam 0,mem_spi_simulate_write_byte_slave_temp
+	fetcht 1,mem_spi_simulate_cs_gpio
+	call gpio_get_bit
+	nrtn true
+spi_simulate_write_byte_slave1:
+	fetcht 1,mem_spi_simulate_write_length_slave_temp
+	setarg mem_spi_simulate_write_byte_slave
+	iadd temp,contr
+	copy contr,regb
+	increase 1,temp
+	storet 1,mem_spi_simulate_write_length_slave_temp
+	copy regb,contr
+	ifetch 1,contr
+	store 1,mem_spi_simulate_write_byte_slave_temp
+	
+	arg 8,loopcnt
+spi_simulate_write_byte_slave_loop:
+	fetcht 1,mem_spi_simulate_cs_gpio
+	call gpio_get_bit
+	nbranch spi_simulate_write_byte_slave_end,true
+	fetcht 1, mem_spi_simulate_sclk_gpio
+	call gpio_get_bit
+	branch spi_simulate_write_byte_slave_loop,true
+spi_simulate_write_byte_slave_loop1:
+	fetch 1,mem_spi_simulate_write_byte_slave_temp
+	store 1,mem_spi_simulate_write_byte_slave_temp_temp
+	and_into 0x80,pdata
+	beq 0x80,spi_simulate_set_miso_gpio_high
+	call spi_simulate_set_miso_gpio_low
+spi_simulate_write_byte_slave_loop2:
+	fetcht 1,mem_spi_simulate_cs_gpio
+	call gpio_get_bit
+	nbranch spi_simulate_write_byte_slave_end,true
+	fetcht 1, mem_spi_simulate_sclk_gpio
+	call gpio_get_bit
+	nbranch spi_simulate_write_byte_slave_loop2,true	
+	fetch 1,mem_spi_simulate_write_byte_slave_temp_temp
+	lshift pdata,pdata
+	store 1,mem_spi_simulate_write_byte_slave_temp
+	loop spi_simulate_write_byte_slave_loop
+
+	fetch 1,mem_spi_simulate_write_length_slave
+	increase -1,pdata
+	store 1,mem_spi_simulate_write_length_slave
+	nbranch spi_simulate_write_byte_slave1,blank
+	
+spi_simulate_write_byte_slave_loop3:
+	fetcht 1,mem_spi_simulate_cs_gpio
+	call gpio_get_bit
+	branch spi_simulate_write_byte_slave_loop3,true
+spi_simulate_write_byte_slave_end:	
+	jam 0,mem_spi_simulate_write_length_slave_temp
+	jam 0,mem_spi_simulate_write_byte_slave_temp
+	jam 0,mem_spi_simulate_write_byte_slave_temp_temp
+	rtn
+	
+spi_simulate_set_miso_gpio_high:
+	fetcht 1,mem_spi_simulate_miso_gpio
+	call gpio_out_inactive
+	branch spi_simulate_write_byte_slave_loop2
+spi_simulate_set_miso_gpio_low:
+	fetcht 1,mem_spi_simulate_miso_gpio
+	branch gpio_out_active	
+
+/******************************simulate spi slave end**********************************/
+
+endif  //SPI_SIMULATE
+
+
+/****************************************key scan***************************************/
+keyscan_key_init:
+	fetch 2,mem_key_num_ptr
+	ifetch 1,pdata
+keyscan_key_init_next:
+	rtn blank
+	copy pdata,loopcnt
+//	copy contr,rega
+	fetch 2,mem_keyscan_ptr
+	increase 3,pdata	//mem_key_conf0_pin
+	copy pdata,rega
+keyscan_key_init_lp1:
+	ifetcht 1, rega
+	call gpio_config_input
+	increase KEY_CONF_STRUCT_LEN,rega
+	loop keyscan_key_init_lp1
+keyscan_key_init_end:
+	rtn
+	
+keyscan_scan_key:
+	fetch 2,mem_keyscan_ptr
+	increase 3,pdata	//mem_key_conf0_pin
+	copy pdata,rega
+//	arg mem_key_conf0_pin,rega
+	force 0,regb
+	jam 0,mem_key_value_temp
+keyscan_scan_key_lp1:
+	ifetcht 1, rega
+	call gpio_get_bit
+	bpatchx patch34_1,mem_patch34
+	fetch 2, mem_key_value_temp
+	copy regb,queue
+	qsetflag true,pdata
+	store 2, mem_key_value_temp
+	increase KEY_CONF_STRUCT_LEN,rega
+	increase 1,regb
+	fetch 2,mem_key_num_ptr
+	ifetch 1,pdata
+keyscan_scan_key_lp1_next:
+	ixor regb,null
+	nbranch keyscan_scan_key_lp1,zero
+	fetch 2,mem_key_value_temp
+	fetcht 2,mem_key_value
+	ixor temp,null
+	rtn zero
+	enable user
+	rtn
+
+keyscan_process_lpm_before:
+	fetch 2,mem_key_num_ptr
+	ifetch 1,pdata
+keyscan_process_lpm_before_next:
+	rtn blank
+	copy pdata,loopcnt
+	fetch 2,mem_keyscan_ptr 
+	increase 3,pdata	//mem_key_conf0_pin
+	copy pdata,rega
+keyscan_process_lpm_before_lp1:
+	ifetcht 1, rega
+	call gpio_set_wake_by_current_state
+	increase KEY_CONF_STRUCT_LEN,rega
+	loop keyscan_process_lpm_before_lp1
+keyscan_process_lpm_before_end:
+	rtn
+
+keyscan_key_process:
+	arg key_scan_timer,queue
+	call timer_check
+	nrtn blank
+	setarg 0x20
+	arg key_scan_timer,queue
+	call timer_init
+	disable user
+	call keyscan_process_lpm_before
+	bpatchx patch34_2,mem_patch34
+	fetch 2,mem_key_num_ptr
+	ifetch 1,pdata
+keyscan_key_process_next:
+	rtn blank
+	call keyscan_scan_key
+	nbranch lpm_button_clean_wake_lock,user
+	call lpm_button_get_wake_lock
+	disable user
+	fetch 2, mem_key_value_temp
+	store 2,mem_key_value_temp4
+	jam 0,mem_key_value_temp6
+	force 0,queue
+keyscan_key_lp1:
+	fetch 2, mem_key_value
+	rshift pdata,temp
+	storet 2,mem_key_value
+	and pdata,0x01,pdata
+	fetcht 2, mem_key_value_temp4
+	and temp,0x01,rega
+	rshift temp,temp
+	storet 2,mem_key_value_temp4
+	ixor rega,null
+	ncall keyscan_send_key_data,zero
+	fetch 2,mem_key_num_ptr
+	ifetch 1,pdata
+keyscan_key_lp1_next:
+	fetcht 1, mem_key_value_temp6
+	increase 1,temp
+	storet 1, mem_key_value_temp6
+	copy temp,queue
+	ixor queue,null
+	nbranch keyscan_key_lp1,zero
+	fetch 2,mem_key_value_temp
+	store 2, mem_key_value
+	rtn
+keyscan_send_key_data:
+	bpatchx patch34_3,mem_patch34
+	fetch 2,mem_keyscan_ptr
+	increase 1,pdata
+	ifetch 2,pdata
+	branch callback_func
+
+
+/*************************************pwm*************************************/
+
+//rega:clk select(0:system clk; 1:system clk undivied; 2:lpo)
+/*rega:clk select
+			0x00:select system clock 12M;
+			0x40:select undivied system clock 24M/48M;
+			0x80:select lpo clock:33K
+*/
+pwm_init:
+	hfetch 1,core_clksel
+	ior rega,pdata
+	hstore 1,core_clksel
+	hfetch 2,core_clkoff
+	set0 CLOCK_OFF_PWM,pdata
+	hstore 2,core_clkoff
+	nop 100
+	rtn
+
+/*	typedef struct
+*	{
+*		uint8 gpio_num
+*		uint8 pwm_channel
+*		uint24 frequency
+*		uint8 duty_cycle   //0-100
+*	}PWM_Style;
+	addr: mem_pdatatemp
+*/
+pwm_out_set:
+	fetcht 3,mem_pdatatemp+2
+	setarg PWM_12MHZ
+	idiv temp
+	call wait_div_end
+	quotient temp
+	fetch 1,mem_pdatatemp+5
+	imul32 temp,pdata
+	div pdata,100
+	call wait_div_end
+	quotient rega
+	copy temp,pdata
+	isub rega,regb	
+	fetch 1,mem_pdatatemp+1
+	call pwm_duty_cycle_set
+	fetch 1,mem_pdatatemp
+	branch pwm_enable
+
+//rega:pcnt ;regb:ncnt ;pdata:pwm channel select
+pwm_duty_cycle_set:
+	beq 0,pwm_pwm0_duty_set
+	beq 1,pwm_pwm1_duty_set
+	beq 2,pwm_pwm2_duty_set
+	beq 3,pwm_pwm3_duty_set
+	beq 4,pwm_pwm4_duty_set
+	beq 5,pwm_pwm5_duty_set
+pwm_pwm0_duty_set:
+	arg core_pwm_pcnt0,contw
+	branch pwm_set_pncnt
+pwm_pwm1_duty_set:
+	arg core_pwm_pcnt1,contw
+	branch pwm_set_pncnt
+pwm_pwm2_duty_set:
+	arg core_pwm_pcnt2,contw
+	branch pwm_set_pncnt
+pwm_pwm3_duty_set:
+	arg core_pwm_pcnt3,contw
+	branch pwm_set_pncnt
+pwm_pwm4_duty_set:
+	arg core_pwm_pcnt4,contw
+	branch pwm_set_pncnt
+pwm_pwm5_duty_set:
+	arg core_pwm_pcnt5,contw
+	branch pwm_set_pncnt
+pwm_set_pncnt:
+	copy rega,pdata
+	istore 2,contw
+	copy regb,pdata
+	istore 2,contw
+	rtn
+
+
+//pdata:gpio select
+pwm_enable:
+	enable user
+	branch pwm_gpio_set
+pwm_disable:
+	disable user
+pwm_gpio_set:
+	beq 4,pwm_gpio4_set
+	beq 5,pwm_gpio5_set
+	beq 27,pwm_gpio27_set
+	beq 28,pwm_gpio28_set
+	beq 3,pwm_gpio3_set
+	beq 8,pwm_gpio8_set
+	beq 20,pwm_gpio20_set
+	beq 21,pwm_gpio21_set
+	beq 22,pwm_gpio22_set
+	beq 23,pwm_gpio23_set
+	rtn
+
+
+pwm_gpio4_set:	//pwm 0
+	arg 6,queue
+	branch pwm_one_set_select
+pwm_gpio5_set:	//pwm 1
+  	arg 7,queue
+	branch pwm_one_set_select
+pwm_gpio27_set:	//pwm 2
+  	arg 8,queue
+	branch pwm_one_set_select
+pwm_gpio28_set:	//pwm 3
+	arg 9,queue
+	branch pwm_one_set_select
+pwm_gpio3_set:	//pwm 4
+ 	arg 10,queue
+	branch pwm_one_set_select
+pwm_gpio8_set:	//pwm 5
+  	arg 11,queue
+	branch pwm_one_set_select
+pwm_gpio20_set:	//pwm 0
+  	arg 12,queue
+	branch pwm_tw0_set_select
+pwm_gpio21_set:	//pwm 1
+  	arg 13,queue
+	branch pwm_tw0_set_select
+pwm_gpio22_set:	//pwm 2
+   	arg 14,queue
+	branch pwm_tw0_set_select
+pwm_gpio23_set:	//pwm 3
+    	arg 15,queue
+	branch pwm_tw0_set_select
+
+pwm_set_select:
+	hfetch 2,core_gpio_sel1
+	qsetflag user,pdata
+	hstore 2,core_gpio_sel1
+	copy rega,queue
+	hfetch 1,core_gpio_key2
+   	qsetflag user,pdata
+   	hstore 1,core_gpio_key2
+	rtn
+
+pwm_one_set_select:
+	add queue,-4,rega
+	branch pwm_set_select
+
+pwm_tw0_set_select:
+	add queue,-10,rega
+	branch pwm_set_select
+
+
+	

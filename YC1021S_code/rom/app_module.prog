@@ -1,0 +1,1502 @@
+
+ifdef COMPILE_MODULE
+
+module_init:
+	
+	rtn wake
+	call le_modified_name
+	call adc_init_data
+	setarg module_process_idle
+	store 2,mem_cb_idle_process
+	setarg module_bt_conn_process
+	store 2,mem_cb_bt_process
+	setarg module_process_bb_event
+	store 2,mem_cb_bb_event_process
+	setarg module_le_conn_process
+	store 2,mem_cb_le_process
+	setarg module_lpm_lock
+	store 2,mem_cb_check_wakelock
+	setarg module_hci_cmd_transmit_le_notify
+	store 2,mem_cb_ble_transmit
+	setarg module_hci_event_receive_spp_data
+	store 2,mem_cb_receive_spp_data
+	setarg module_le_receive_data
+	store 2,mem_cb_att_write
+	setarg module_bb_event_timer
+	store 2,mem_cb_event_timer
+
+	call module_spp_clear_last_transmite_clock
+	bpatch patch1b_5,mem_patch1b
+	call module_lpm_uart_init
+	call module_gpio_init
+	call check_module_disabled
+	branch module_hci_event_enter_standby_mode
+
+
+module_lpm_uart_init:
+	fetch 4,mem_module_uart_rx_buffer
+	hstore 4,core_uart_rsaddr
+
+	fetch 4,mem_module_uart_tx_buffer
+	hstore 4,core_uart_tsaddr
+
+	hfetch 1,core_gpio_sel1
+	or_into 0x04,pdata
+	and_into 0xfc,pdata
+	hstore 1,core_gpio_sel1
+	hjam 0x00,core_uart_ctrl
+
+	fetch 2,mem_module_uart_rx_buffer
+	hstore 2,core_uart_rrptr
+	fetch 2,mem_module_uart_tx_buffer
+	hstore 2,core_uart_twptr
+	hstore 2,core_uart_trptrp
+
+	hfetch 4,core_gpio_pu0
+	set1 7,pdata
+	hstore 4,core_gpio_pu0
+	
+	hfetch 2,core_clkoff
+	set0 CLOCK_OFF_UART,pdata
+	hstore 2,core_clkoff
+	call uart_set_baud_by_mem
+	hjam uartclk_crystal,core_uart_clksel
+	hjam uart_ctrl_h4,core_uart_ctrl
+
+	fetch 1,mem_module_flag
+	isolate1 MODULE_FLAG_UART_FLOW_CONTROL,pdata
+	hfetcht 1,core_uart_ctrl
+	setflag true,4,temp
+	hstoret 1,core_uart_ctrl
+	rtn
+	
+
+
+module_lpm_init:
+	call module_spp_clear_last_transmite_clock
+	branch module_lpm_uart_init
+//	branch module_gpio_init
+	
+module_gpio_init:
+	//module state pin
+//	call ui_led_init	
+//	call app_led_start_blink
+	//module conn state pin
+	fetcht 1,mem_module_connect_state_gpio
+	call gpio_config_output
+	call module_set_conn_pin_low
+	
+	fetcht 1,mem_module_wake_up_gpio
+	branch gpio_config_input
+
+module_lpm_lock:
+	fetcht 1,mem_module_wake_up_gpio
+	call gpio_get_bit
+	nbranch app_put_lpm_wake_lock,true
+	branch app_get_lpm_wake_lock
+
+	
+module_le_conn_process:
+	rtn
+
+module_bt_conn_process:
+	call module_spp_enter_sniff
+	branch module_control_air_flow
+
+module_spp_enter_sniff:
+	fetch 1,mem_ui_state_map
+	bbit0 UI_STATE_BT_SPP_CONN,module_spp_clear_last_transmite_clock
+	bpatch patch1b_6,mem_patch1b
+	setarg 0x3eff
+	fetcht 4,mem_last_transmite_clock
+	iadd temp,temp
+	copy clkn_bt,pdata
+	isub temp,null
+	nrtn positive
+	fetch 2,mem_ui_state_map
+	bbit1 UI_STATE_BT_SNIFF,module_spp_clear_last_transmite_clock
+	fetch 1,mem_module_flag
+	rtnbit1 MOUDLE_TASK_SNIFF
+	call module_set_sniff_task_flag
+	call app_bt_enter_sniff
+module_spp_clear_last_transmite_clock:
+	copy clkn_bt,pdata
+	store 4,mem_last_transmite_clock
+	rtn
+	
+
+module_process_idle:
+	call module_control_air_flow
+	call l2cap_malloc_is_fifo_full
+	nrtn blank
+	branch module_process
+
+	
+module_process_bb_event:
+	copy regc,pdata
+	beq BT_EVT_BB_CONNECTED,module_process_bb_conn
+	beq BT_EVT_BB_DISCONNECTED,module_process_bb_event_disconned
+	beq BT_EVT_RECONN_FAILED,module_process_reconn_fail
+	beq BT_EVT_SETUP_COMPLETE,module_process_setup_complete
+	beq BT_EVT_SPP_CONNECTED,module_process_spp_connected
+	beq BT_EVT_SPP_DISCONNECTED,module_process_spp_disconnected
+	beq BT_EVT_PINCODE_REQ,module_process_evt_pincode_req
+	beq BT_EVT_ENTER_SNIFF,module_process_enter_sniff
+	beq BT_EVT_EXIT_SNIFF,module_process_exit_sniff
+	beq BT_EVT_RECONN_PAGE_TIMEOUT,module_process_page_time_out
+	beq BT_EVT_LE_CONNECTED,module_process_le_conn
+	beq BT_EVT_LE_DISCONNECTED,module_process_bb_even_le_disconn
+	beq BT_EVT_SNIFF_NOT_ACCEPT,module_process_sniff_not_accept
+	beq BT_EVT_UNSNIFF_ACCEPT,module_process_unsniff_accept
+	beq BT_EVT_UNSNIFF_NOT_ACCEPT,module_process_unsniff_not_accept
+	beq BT_EVT_LE_PAIRING_FAIL,module_hci_event_le_pairing_fail
+	beq BT_EVT_LE_PAIRING_SUCCESS,module_hci_event_le_pairing_success
+	beq BT_EVT_LE_START_ENC,module_hci_event_start_enc
+	beq BT_EVT_LE_PAUSE_ENC,module_hci_event_pause_enc
+	beq BT_EVT_LE_TK_GENERATE,module_hci_event_le_tk
+	beq BT_EVT_BT_GKEY_GENERATE,module_hci_event_gkey_generate
+	beq BT_EVT_BT_GET_PASSKEY,module_hci_event_passkey_entry_mode
+	beq BT_EVT_BT_PAIRING_FAIL,module_hci_event_bt_pairing_fail	
+	beq BT_EVT_BT_PAIRING_SUCCESS,module_hci_event_bt_pairing_success
+ifdef SECURE_CONNECTION	
+	beq BT_EVT_LE_GKEY_GENERATE,module_hci_event_le_gkey
+endif
+	beq BT_EVT_STORE_NVRAM,module_hci_event_store_device
+	beq BT_EVT_LE_LTK_LOST,module_process_ble_ltk_lost
+	rtn
+
+	
+module_process_bb_event_disconned:
+	call module_spp_clear_last_transmite_clock
+	fetch 1,mem_flag_pairing_state
+	ncall module_hci_event_bt_pairing_fail,blank
+	call module_disconn_start
+	fetch 2,mem_ui_state_map
+	rtnbit0 UI_STATE_BT_SPP_CONN
+	branch  module_spp_disconnected
+
+module_process_spp_connected:
+	fetch 2,mem_ui_state_map
+	set1 UI_STATE_BT_SPP_CONN,pdata
+	store 2,mem_ui_state_map
+	fetch 1,mem_module_spp_lpm_mult
+	store 1,mem_lpm_mult
+	call module_set_conn_pin_low
+	branch module_hci_event_spp_connect
+
+module_process_spp_disconnected:
+//	branch module_spp_disconnected
+module_spp_disconnected:
+	fetch 2,mem_ui_state_map
+	rtnbit0 UI_STATE_BT_SPP_CONN
+	set0 UI_STATE_BT_SPP_CONN ,pdata
+	store 2,mem_ui_state_map
+	branch module_hci_event_spp_disconnect
+
+
+module_process_enter_sniff:
+
+module_sniff_param_check:
+	call module_spp_clear_last_transmite_clock
+	//fetch 1,mem_context
+	//rtnbit0 state_insniff
+	fetch 2,mem_context+coffset_tsniff
+	rshift pdata,pdata
+	fetcht 2,mem_sniff_param_interval
+	isub temp,null
+	nbranch module_sniff_param_check_unsniff,zero
+	branch app_lpm_mult_enable
+module_sniff_param_check_unsniff:
+	fetch 1,mem_module_flag
+	rtnbit1 MOUDLE_TASK_UNSNIFF
+	hfetch 2,core_uart_rxitems    //*
+	ncall module_set_unsniff_task_flag,blank    //*加这两句话
+	branch app_bt_sniff_exit
+
+module_process_exit_sniff:
+	call module_clear_sniff_task_flag
+	branch app_lpm_mult_disable
+ 	
+module_process_setup_complete:
+	call module_spp_clear_last_transmite_clock
+	branch module_conn_start
+	
+module_process_bb_even_le_disconn:
+	call le_clr_config_more_data
+	call module_disconn_start
+	branch module_hci_event_le_disconnect
+
+module_process_evt_pincode_req:
+	branch  app_bt_set_pincode
+	
+
+module_process_sniff_not_accept:
+	branch module_clear_sniff_task_flag
+
+
+module_process_unsniff_accept:
+	fetch 1,mem_module_flag
+	bbit0 MOUDLE_TASK_UNSNIFF,app_bt_enter_sniff
+	branch module_clear_unsniff_task_flag
+
+	
+module_process_unsniff_not_accept:
+	branch module_clear_unsniff_task_flag
+
+	
+module_process_le_conn:
+	call le_send_att_exchange_mtu_requset
+	call module_conn_start
+	fetch 1,mem_module_le_lpm_mult
+	store 1,mem_lpm_mult
+	branch module_hci_event_le_connect
+
+
+module_process_bb_conn:
+	jam 0,mem_flag_mode_ssp_pin
+	call module_clear_sniff_task_flag
+	branch module_clear_unsniff_task_flag
+
+module_process_page_time_out:
+module_process_reconn_fail:
+module_disconn_start:
+	call module_start_adv_discovery_by_command
+	branch module_set_conn_pin_high
+
+
+module_process_ble_ltk_lost:
+	call le_send_reject_ind
+	branch le_send_smp_security_request
+
+
+module_set_conn_pin_high:
+	fetcht 1,mem_module_connect_state_gpio
+	branch gpio_out_active
+
+module_conn_start:
+	call module_stop_adv_discovery
+	branch module_set_conn_pin_low
+	
+module_stop_adv_discovery:
+	fetch 1,mem_module_state
+	isolate1 MOUDLE_STATE_BT_BIT,pdata
+	call app_bt_stop_discovery,true
+	fetch 1,mem_module_state
+	isolate1 MOUDLE_STATE_BLE_BIT,pdata
+	call app_ble_stop_adv,true
+	rtn
+module_set_conn_pin_low:
+	fetcht 1,mem_module_connect_state_gpio
+	branch gpio_out_inactive
+
+module_process_with_credit:
+	fetch 1,mem_credit_flag
+	rtneq CREDIT_DISABLE
+	branch rfcomm_send_uih_without_payload
+
+module_process:
+	hfetch 1,core_uart_status
+	bbit1 uart_status_rx_fifo_empty,module_process_with_credit  //rx no data
+	call uartd_prepare_rx
+	ifetch 1,contru
+	bne 0x01,module_hci_in_excp
+	hfetch 2,core_uart_rxitems
+	sub pdata,2,null
+	rtn positive
+	ifetch 1,contru
+	store 1,mem_module_uart_opcode
+	ifetcht 1,contru
+	copy contru,rega
+	storet 1,mem_module_uart_len
+	add temp,3,temp
+	hfetch 2,core_uart_rxitems
+	isub temp,temp
+	nrtn positive
+	jam HCI_DISCARD_PACKET,mem_module_temp_nl_discard_packet
+	call module_hci_cmd_control
+	fetch 1,mem_module_temp_nl_discard_packet
+	rtneq HCI_NOT_DISCARD_PACKET
+	branch module_hci_dicard_packet //discard this packet
+
+module_hci_in_excp:
+	call delay_10ms
+	call module_hci_event_invalid_packet
+	branch module_hci_release_except
+
+module_hci_release_except:
+	bpatch patch1b_7,mem_patch1b
+	hfetch 2,core_uart_rxitems
+	rtn blank
+	call uartd_prepare_rx
+	ifetch 1,contru
+	sub pdata,0x01,null
+	ncall module_hci_dicard_bytes,zero
+	nbranch module_hci_release_except,zero
+	ifetch 1,contru
+	rtneq HCI_CMD_SPP_DATA_REQ
+	rtneq HCI_CMD_SET_CREDIT_GIVEN
+	increase -1,contru
+	call module_hci_dicard_bytes
+	branch module_hci_release_except
+
+module_hci_dicard_packet:
+	call uartd_prepare_rx
+	increase 2,contru
+	ifetch 1,contru
+	iadd contru,contru
+module_hci_dicard_bytes:
+	branch uartd_rxdone
+	
+/*********************HCI CONTROL*********************/
+module_hci_cmd_control:
+	bpatch patch1c_0,mem_patch1c
+	fetch 1,mem_module_uart_opcode
+	beq HCI_CMD_SET_BT_ADDR_REQ,module_hci_cmd_set_bt_addr
+	beq HCI_CMD_SET_LE_ADDR_REQ,module_hci_cmd_set_le_addr
+	beq HCI_CMD_SET_VISIBILITY_REQ,module_hci_cmd_set_visibility	
+	beq HCI_CMD_SET_BT_NAME_REQ,module_hci_cmd_set_bt_name
+	beq HCI_CMD_SET_LE_NAME_REQ,module_hci_cmd_set_le_name
+	beq HCI_CMD_SPP_DATA_REQ,module_hci_cmd_receive_spp_data
+	beq HCI_CMD_LE_DATA_REQ,module_hci_cmd_receive_le_data
+	beq HCI_CMD_STATUS_IRQ,module_hci_cmd_inquire_status
+	beq HCI_CMD_SET_PAIRING_REQ,module_hci_cmd_set_pairing_mode
+	beq HCI_CMD_SET_PINCODE_REQ,module_hci_cmd_set_pincode	
+	beq HCI_CMD_SET_UARTCONTROL_REQ,module_hci_cmd_set_uart_control_mode
+	beq HCI_CMD_SET_UART_BAUD_REQ,module_hci_cmd_set_uart_baud
+	beq HCI_CMD_VERSION_REQ,module_hci_cmd_version_request
+	beq HCI_CMD_BT_DISCONNECT,module_hci_cmd_bt_disconnect
+	beq HCI_CMD_BLE_DISCONNECT,module_hci_cmd_ble_disconnect
+	beq HCI_CMD_SET_NVRAM_REQ,module_hci_cmd_set_nvram
+	beq HCI_CMD_CONFIRM_GKEY,module_hci_cmd_confirm_gkey
+	beq HCI_CMD_SET_CREDIT_GIVEN,module_hci_cmd_set_credit_given
+	beq HCI_CMD_AUTO_ADV_SCAN,module_hci_cmd_auto_adv
+	beq HCI_CMD_POWER_REQ,module_hci_cmd_power_request
+	beq HCI_CMD_POWER_SET,module_hci_cmd_power_set
+	beq HCI_CMD_PASSKEY_ENTRY,module_hci_cmd_passkey_entry
+	beq HCI_CMD_SET_GPIO,module_hci_cmd_set_gpio
+	beq HCI_CMD_READ_GPIO,module_hci_cmd_read_gpio
+	beq HCI_CMD_LE_SET_PAIRING,module_hci_cmd_le_set_pairing_mode
+	beq HCI_CMD_LE_SET_ADV_DATA,module_hci_cmd_le_set_adv_data
+	beq HCI_CMD_LE_SET_SCAN_DATA,module_hci_cmd_le_set_scan_data
+	beq HCI_CMD_LE_SEND_CONN_UPDATE_REQ,module_hci_cmd_le_send_conn_update_req
+	beq HCI_CMD_LE_SET_ADV_PARM,module_hci_cmd_set_le_adv_parameter
+	beq HCI_CMD_LE_START_PAIRING,module_hci_cmd_le_start_pairing
+	beq HCI_CMD_SET_WAKE_GPIO,module_hci_cmd_set_wake_gpio
+	beq HCI_CMD_SET_TX_POWER,module_hci_cmd_set_tx_power
+	beq HCI_CMD_LE_CONFIRM_GKEY,module_hci_cmd_le_confirm_gkey
+	beq HCI_CMD_REJECT_JUSTWORK,module_hci_cmd_set_reject_justwork_flag
+	beq HCI_CMD_RESET_CHIP_REQ,module_hci_cmd_reset_chip
+	beq HCI_CMD_LE_SET_FIXED_PASSKEY,module_hci_cmd_le_set_fixed_passkey
+	beq HCI_TEST_CMD_CLOSE_LPM,module_hci_test_cmde_close_lpm
+	branch  module_hci_event_receive_invalid_cmd
+
+/*********************HCI COMMAND*********************/
+
+//command opcode 0x00
+module_hci_cmd_set_bt_addr:
+	fetch 1,mem_module_uart_len
+	bne 6,module_hci_event_receive_invalid_cmd
+	ifetch 6,contru
+	store 6,mem_lap
+	branch module_hci_event_receive_valid_cmd
+
+//command opcode 0x01
+module_hci_cmd_set_le_addr:
+	fetch 1,mem_module_uart_len
+	bne 6,module_hci_event_receive_invalid_cmd
+	ifetch 6,contru
+	store 6,mem_le_lap
+	branch module_hci_event_receive_valid_cmd
+
+
+//command opcode 0x02
+module_hci_cmd_set_visibility:
+	fetch 1,mem_module_uart_len
+	bne 1,module_hci_event_receive_invalid_cmd
+	copy rega,contru
+	call module_hci_event_receive_valid_cmd
+	ifetcht 1,contru
+	storet 1,mem_module_bluetooth_stauts_by_command
+	fetch 2,mem_ui_state_map
+	rtnbit1 UI_STATE_BLE_CONNECTED
+	rtnbit1 UI_STATE_BT_CONNECTED
+module_start_adv_discovery_by_command:
+	fetch 1,mem_module_state
+	isolate1 MOUDLE_STATE_BT_BIT,pdata
+	nbranch moudle_start_adv_by_command,true
+	fetcht 1,mem_module_bluetooth_stauts_by_command
+	and temp,0x03,pdata
+	store 1,mem_scan_mode
+moudle_start_adv_by_command:
+	fetch 1,mem_module_state
+	isolate1 MOUDLE_STATE_BLE_BIT,pdata
+	nrtn true
+	fetcht 1,mem_module_bluetooth_stauts_by_command
+	isolate1 2,temp
+	branch app_ble_start_adv,true
+	branch app_ble_stop_adv
+
+
+//command opcode 0x03
+module_hci_cmd_set_bt_name:
+	fetch 1,mem_module_uart_len
+	sub pdata,67,null
+	nbranch module_hci_event_receive_invalid_cmd,positive
+	store 1,mem_local_name_length
+	arg 8,loopcnt
+	call memset0
+	fetch 1,mem_module_uart_len
+	copy pdata,loopcnt
+	copy rega,contru
+	arg mem_local_name,contw
+	call uart_copy_rx_bytes_fast
+	branch module_hci_event_receive_valid_cmd
+
+
+//command opcode 0x04
+module_hci_cmd_set_le_name:
+	fetch 1,mem_module_uart_len
+	sub pdata,29,null
+	nbranch module_hci_event_receive_invalid_cmd,positive
+	store 1,mem_le_name_len
+	copy pdata,loopcnt
+	copy rega,contru
+	arg mem_le_name,contw
+	call uart_copy_rx_bytes_fast
+	call le_modified_name
+	branch module_hci_event_receive_valid_cmd
+
+
+//command opcode 0x05
+module_hci_cmd_receive_spp_data:
+	fetch 1,mem_ui_state_map
+	bbit0 UI_STATE_BT_SPP_CONN,module_hci_event_receive_invalid_cmd
+	call app_check_sniff
+	branch module_hci_cmd_spp_exit_sniff,true
+	jam HCI_NOT_DISCARD_PACKET,mem_module_temp_nl_discard_packet
+//	call p_nl_clear_last_transmite_clock
+	call module_spp_clear_last_transmite_clock
+	fetch 1,mem_remote_credits
+	rtn blank
+	fetch 2,mem_nl_rx_len_all
+	bne 0,module_hci_cmd_pass_init_ng_rx_len_all
+	fetch 1,mem_module_uart_len
+	store 2,mem_nl_rx_len_all
+
+	copy rega,contru
+//	ifetch 2,contru
+//	store 2,mem_nl_rx_handle
+	copy contru,pdata
+	store 2,mem_nl_rx_data_src
+module_hci_cmd_pass_init_ng_rx_len_all:
+	call module_hci_cmd_get_current_packet_len_and_remain_len
+	branch spp_tx_rfcomm_packet
+	
+module_hci_cmd_spp_exit_sniff:
+	jam HCI_NOT_DISCARD_PACKET,mem_module_temp_nl_discard_packet
+	branch module_exit_sniff
+
+module_hci_cmd_get_current_packet_len_and_remain_len:
+	call module_hci_cmd_get_current_patcket_len
+	fetch 2,mem_nl_rx_len_all
+	fetcht 2,mem_current_packet_length
+	isub temp,pdata
+	store 2,mem_nl_rx_len_all
+	rtn
+
+module_hci_cmd_get_current_patcket_len:
+	fetch 2,mem_nl_rx_len_all
+	arg DM_REFCOM_BUFF_LEN,temp
+	call not_greater_than
+	fetcht 2,mem_rfcomm_max_frame_size
+	call not_greater_than
+	fetcht 2,mem_pn_max_frame_size
+	call not_greater_than
+	store 2,mem_current_packet_length
+	rtn
+
+module_hci_command_tx_spp_tx_complete:
+	jam HCI_DISCARD_PACKET,mem_module_temp_nl_discard_packet
+	jam HCI_CMD_SPP_DATA_REQ,mem_module_uart_opcode
+	branch module_hci_event_receive_valid_cmd
+
+
+//command opcode 0x09
+module_hci_cmd_receive_le_data:
+	fetch 2,mem_ui_state_map
+	bbit0 UI_STATE_BLE_CONNECTED,module_hci_event_receive_invalid_cmd
+	call module_check_ble_encrypt_state
+	branch module_hci_event_receive_invalid_cmd,user
+	jam HCI_NOT_DISCARD_PACKET,mem_module_temp_nl_discard_packet 
+	fetch 1,mem_module_flag
+	bbit1 MODULE_FLAG_BLE_DATA_FINISH,module_hci_cmd_receive_le_data_finish
+	fetch 1,mem_module_hci_notify_len
+	nrtn blank
+	jam HCI_DISCARD_PACKET,mem_module_temp_nl_discard_packet 
+	ifetch 2,contru		//handle
+	store 2,mem_module_hci_notify_handle
+	copy contru,pdata
+	store 2,mem_module_hci_nofiy_addr
+	fetch 1,mem_module_uart_len
+	pincrease -2
+	nbranch module_hci_event_receive_invalid_cmd,positive
+	branch module_hci_event_receive_invalid_cmd,zero
+	store 1,mem_module_hci_notify_len
+	jam HCI_NOT_DISCARD_PACKET,mem_module_temp_nl_discard_packet
+	call le_set_config_more_data
+	call module_hci_cmd_transmit_le_notify
+	call module_hci_cmd_transmit_le_notify
+	call module_hci_cmd_transmit_le_notify
+	fetch 1,mem_module_flag
+	rtnbit0 MODULE_FLAG_BLE_DATA_FINISH
+module_hci_cmd_receive_le_data_finish:
+	jam HCI_DISCARD_PACKET,mem_module_temp_nl_discard_packet 
+	call module_clear_le_tx_data_flag
+	branch module_hci_event_receive_valid_cmd
+
+module_hci_cmd_transmit_le_notify:
+	fetch 1,mem_module_hci_notify_len
+	rtn blank
+	call le_fifo_check_nearly_full
+	nrtn blank				//no fifo
+	call module_get_le_remote_mtu
+	bpatch patch1c_1,mem_patch1c
+	add temp,-3,pdata		//sub handle and opcode
+	fetcht 1,mem_module_hci_notify_len
+	call not_greater_than
+	copy pdata,rega
+	copy temp,pdata
+	isub rega,pdata
+	store 1,mem_module_hci_notify_len
+	fetcht 2,mem_module_hci_notify_handle
+	call le_att_malloc_tx_notify
+	fetch 2,mem_module_hci_nofiy_addr
+	copy pdata,contru
+	copy rega,loopcnt
+	call uart_copy_rx_bytes_fast
+	copy contru,pdata
+	store 2,mem_module_hci_nofiy_addr
+	fetch 1,mem_module_hci_notify_len
+	nrtn blank
+	branch module_set_le_tx_data_flag
+
+
+//output: temp is master mtu
+module_get_le_remote_mtu:
+	arg 0x17,temp
+	fetch 1,mem_module_flag
+	rtnbit1 MODULE_FLAG_BLE_SEND_MTU23
+	fetcht 2,mem_le_remote_mtu
+	rtn
+
+module_check_ble_encrypt_state:
+	fetch 1,mem_module_flag
+	bbit1 MODULE_FLAG_BLE_DATA_ENCRYPT,le_check_encrypt_state
+	branch disable_user
+	
+
+//command opcode 0x0b
+module_hci_cmd_inquire_status:
+	branch module_hci_event_status_res
+
+
+//command opcode 0x0c
+module_hci_cmd_set_pairing_mode:
+	copy rega,contru
+	ifetch 1,contru
+	beq PAIRING_PINCODE,module_hci_pairing_pincode_mode
+	beq PAIRING_JUSTWORK,module_hci_pairing_just_work_mode
+	beq PAIRING_PASSKEY,module_hci_pairing_passkey
+	beq PAIRING_CONFIRM,module_hci_pairing_numeric_comparison
+	branch module_hci_event_receive_invalid_cmd
+module_hci_pairing_pincode_mode:
+	call ssp_disable
+	jam 0,mem_ssp_enable
+	branch module_hci_event_receive_valid_cmd
+module_hci_pairing_just_work_mode:
+	setarg SSP_MODE_JUST_WORK_IO_CAP_DATA
+module_hci_sspairing_mode:	
+	store 3,mem_sp_iocap_local
+	store 1,mem_ssp_mode_flag
+	call ssp_enable
+	jam 1,mem_ssp_enable
+	branch module_hci_event_receive_valid_cmd
+module_hci_pairing_passkey:
+	setarg SSP_MODE_PASSKEY_IO_CAP_DATA
+	branch module_hci_sspairing_mode
+
+module_hci_pairing_numeric_comparison:
+	setarg SSP_MODE_SSP_PIN_IO_CAP_DATA
+	branch module_hci_sspairing_mode
+
+//command opcode 0x0d
+module_hci_cmd_set_pincode:
+	fetch 1,mem_module_uart_len
+	sub pdata,16,null
+	nbranch module_hci_event_receive_invalid_cmd,positive
+	store 1,mem_pin_length
+	copy pdata,loopcnt
+	arg mem_pin,contw
+	call uart_copy_rx_bytes
+	branch module_hci_event_receive_valid_cmd
+
+
+//command opcode 0x0e
+module_hci_cmd_set_uart_control_mode:
+	copy rega,contru
+	ifetch 1,contru
+	hfetcht 1,core_uart_ctrl
+	nsetflag blank,4,temp
+	hstoret 1,core_uart_ctrl
+ 	branch module_hci_event_receive_valid_cmd
+
+ 	
+//command opcode 0x0f
+module_hci_cmd_set_uart_baud:
+	fetch 1,mem_module_uart_len
+	copy pdata,loopcnt
+	copy rega,contru
+	call string2dec_from_uart
+	setarg uart_clk_24
+	idiv temp
+	call wait_div_end
+	quotient pdata
+module_hci_cmd_set_uart_baud_ok:
+	store uart_baud_len,mem_baud
+	call module_hci_event_receive_valid_cmd
+	call wait_uarttx
+	branch uart_set_baud_by_mem
+
+
+//command opcode 0x10
+module_hci_cmd_version_request:
+	arg 2,rega
+	arg mem_soft_version_num,regb
+	arg 0,temp
+	branch module_hci_event_set_cmd
+module_hci_event_set_cmd_send_response:
+	store 2,mem_event_cmd_response_content
+	arg mem_event_cmd_response_content,regb
+	arg 0,temp
+	branch module_hci_event_set_cmd
+
+
+//command opcode 0x11
+module_hci_cmd_bt_disconnect:
+	fetch 2,mem_ui_state_map
+	bbit0 UI_STATE_BT_CONNECTED,module_hci_event_receive_invalid_cmd
+module_hci_cmd_bt_disconnect_doing:
+	call module_hci_event_receive_valid_cmd
+	branch app_bt_disconnect
+
+	
+//command opcode 0x12
+module_hci_cmd_ble_disconnect:
+	fetch 2,mem_ui_state_map
+	bbit0 UI_STATE_BLE_CONNECTED,module_hci_event_receive_invalid_cmd
+module_hci_cmd_ble_disconnect_doing:
+	call module_hci_event_receive_valid_cmd
+	branch app_ble_disconnect
+
+
+
+
+//command opcode 0x26
+module_hci_cmd_set_nvram:
+	fetch 1,mem_module_uart_len
+	copy pdata,loopcnt
+	copy rega,contru
+	fetch 2,mem_nv_data_ptr
+	icopy contw
+	call uart_copy_rx_bytes_fast
+	branch module_hci_event_receive_valid_cmd
+
+
+//command opcode 0x28
+module_hci_cmd_confirm_gkey:
+	fetch 1,mem_ui_state_map
+	bbit0 UI_STATE_BT_CONNECTED,module_hci_event_receive_invalid_cmd	
+	ifetch 1,contru
+	fetcht 1,mem_flag_mode_ssp_pin
+	setflag blank,FLAG_MODE_SSP_PIN_COMPARISON_RESULT_BIT,temp
+	set1 FLAG_MODE_SSP_PIN_REVICEVE_COMPARISON_BIT ,temp
+	storet 1,mem_flag_mode_ssp_pin
+
+	call module_hci_event_receive_valid_cmd
+
+	fetch 1,mem_flag_mode_ssp_pin
+	bbit1 FLAG_MODE_SSP_PIN_RECIEVE_DHKEY_BIT,module_hci_cmd_spp_number_comparison_result_is1
+	rtn
+
+dhkey_not_accept:
+	jam 0,mem_flag_mode_ssp_pin
+	jam BT_CMD_DHKEY_NOT_ACCEPT,mem_fifo_temp
+	branch ui_ipc_send_cmd
+
+
+module_hci_cmd_spp_number_comparison_result_is1:
+	bbit1 FLAG_MODE_SSP_PIN_COMPARISON_RESULT_BIT,number_comparison_successed
+	branch dhkey_not_accept	
+
+
+//command opcode 0x29
+module_hci_cmd_set_credit_given:
+	fetch 1,mem_ui_state_map
+	rtnbit0 UI_STATE_BT_SPP_CONN
+	fetch 1,mem_credit_flag
+	rtneq CREDIT_DISABLE
+	ifetch 1,contru
+	fetcht 1,mem_credit_given
+	iadd temp,temp
+	storet 1,mem_credit_given
+	rtn
+
+	
+//command opcode 0x2a
+module_hci_cmd_auto_adv:
+	arg 0x40,loopcnt
+	arg mem_le_adv_data_len,contw
+	call clear_mem
+	setarg 0
+	store 1,mem_regb
+	copy rega,contru
+module_hci_cmd_auto_adv_loop:
+	copy contru,pdata
+	store 2,mem_regc
+	call module_hci_cmd_auto_adv_adv_analys
+
+	fetch 1,mem_regb
+	fetcht 1,mem_temp
+	increase 1,temp
+	iadd temp,pdata
+	store 1,mem_regb
+
+	sub pdata,31,null
+	nbranch module_hci_cmd_auto_adv_store_scan,positive
+module_hci_cmd_auto_adv_store_adv:
+	fetcht 1,mem_le_adv_data_len
+	setarg mem_le_adv_data
+	iadd temp,pdata
+	store 2,mem_contw
+	fetcht 1,mem_temp
+	increase 1,temp
+	fetch 1,mem_le_adv_data_len
+	iadd temp,pdata
+	store 1,mem_le_adv_data_len
+	branch module_hci_cmd_auto_adv_store_common
+module_hci_cmd_auto_adv_store_scan:
+	fetcht 1,mem_le_scan_data_len
+	setarg mem_le_scan_data
+	iadd temp,pdata
+	store 2,mem_contw
+	fetcht 1,mem_temp
+	increase 1,temp
+	fetch 1,mem_le_scan_data_len
+	iadd temp,pdata
+	store 1,mem_le_scan_data_len
+module_hci_cmd_auto_adv_store_common:
+	fetch 2,mem_contw
+	copy pdata,contw
+	fetch 2,mem_regc
+	copy pdata,contru
+
+	copy temp,loopcnt
+	call uart_copy_rx_bytes_fast
+
+	fetch 1,mem_module_uart_len
+	fetcht 1,mem_regb
+	isub temp,null
+	nbranch  module_hci_cmd_auto_adv_loop,zero
+	branch module_hci_event_receive_valid_cmd
+
+//block of adv len in mem_temp
+module_hci_cmd_auto_adv_adv_analys:
+	ifetch 1,contru
+	store 1,mem_temp
+	ifetch 1,contru
+	store 1,mem_rega
+	rtn
+
+
+//command opcode 0x2b
+module_hci_cmd_power_request:
+	arg 0,temp
+	arg 2,rega
+	fetch 2,mem_module_vdd_quotient
+	store 2,mem_event_cmd_response_content
+	arg mem_event_cmd_response_content,regb
+	branch module_hci_event_set_cmd
+
+
+//command opcode 0x2c
+module_hci_cmd_power_set:
+	fetch 1,mem_module_uart_len
+	bne 1,module_hci_event_receive_invalid_cmd
+	ifetch 1,contru
+	store 1,mem_module_read_vdd_flag
+	setarg 0x00
+	store 2,mem_module_vdd_quotient
+	branch module_hci_event_receive_valid_cmd
+
+
+//command opcode 0x30
+module_hci_cmd_passkey_entry:
+	ifetch 4,contru
+	store 4,mem_pin
+	jam 4,mem_pin_length
+	jam 0,mem_authentication_passkey_times
+	call module_hci_event_receive_valid_cmd
+	branch authentication_passkey
+
+
+//command opcode 0x31
+module_hci_cmd_set_gpio:
+	fetch 1,mem_module_uart_len
+	bne 3,module_hci_event_receive_invalid_cmd
+	ifetch 1,contru
+	beq HCI_CMD_CONFIG_GPIO_INPUT,module_set_gpio_input
+	beq HCI_CMD_CONFIG_GPIO_OUTPUT,module_set_gpio_output
+	branch module_hci_event_receive_invalid_cmd
+
+module_set_gpio_input:
+	ifetcht 1,contru
+	ifetch 1,contru
+	beq GPIO_INPUT_HIGH_IMPEDANCE,module_set_gpio_high_impedance
+	nsetflag blank,7,temp
+	call gpio_config_input
+	branch module_hci_event_receive_valid_cmd
+
+module_set_gpio_high_impedance:
+	call gpio_set_high_impedance
+	branch module_hci_event_receive_valid_cmd
+	
+module_set_gpio_output:
+	ifetcht 1,contru
+	call gpio_config_output0
+	ifetch 1,contru	
+	isolate1 0,pdata
+	call gpio_out_flag
+	branch module_hci_event_receive_valid_cmd
+
+
+//command opcode 0x32
+module_hci_cmd_read_gpio:
+	fetch 1,mem_module_uart_len
+	bne 1,module_hci_event_receive_invalid_cmd
+	ifetcht 1,contru
+	call gpio_get_bit
+	setarg 0x0
+	nsetflag true,0,pdata
+	arg 1,rega
+	branch module_hci_event_set_cmd_send_response
+
+
+//command opcode 0x33
+module_hci_cmd_le_set_pairing_mode:
+	copy rega,contru
+	ifetch 1,contru
+	copy pdata,temp
+ifdef SECURE_CONNECTION
+	beq LE_PAIRING_MODE_SECURE_CONNECT_JUSTWORK,module_le_set_pairing_mode_secure_justwork
+	beq LE_PAIRING_MODE_SECURE_CONNECT_NUMERIC,module_le_set_pairing_mode_secure_numeric
+	beq LE_PAIRING_MODE_SECURE_CONNECT_PASSKEY,module_le_set_pairing_mode_secure_passkey
+endif
+	store 1,mem_le_pairing_mode
+	beq LE_PAIRING_MODE_NONE, module_le_set_no_pairing
+	beq LE_PAIRING_MODE_LAGACY_JUSTWORK,module_le_set_pairing_mode_lagacy_just_work
+	beq LE_PAIRING_MODE_LAGACY_PASSKEY,module_le_set_pairing_mode_lagacy_passkey
+	branch module_hci_event_receive_invalid_cmd
+		
+ifdef SECURE_CONNECTION	
+module_le_set_pairing_mode_secure_justwork:
+	fetch 1,mem_le_secure_connect_enable
+	branch module_hci_event_receive_invalid_cmd,blank
+	storet 1,mem_le_pairing_mode
+	jam FLAG_LE_BONDING_MITM_SECURE,mem_le_pres_auth
+	branch module_le_set_noinputnooutput
+module_le_set_pairing_mode_secure_numeric:
+	fetch 1,mem_le_secure_connect_enable
+	branch module_hci_event_receive_invalid_cmd,blank
+	storet 1,mem_le_pairing_mode
+	jam FLAG_LE_BONDING_MITM_SECURE,mem_le_pres_auth
+	jam FLAG_IOCAP_DISPLAYYESNO,mem_le_pres_iocap
+	branch module_hci_event_receive_valid_cmd	
+module_le_set_pairing_mode_secure_passkey:	
+	fetch 1,mem_le_secure_connect_enable
+	branch module_hci_event_receive_invalid_cmd,blank
+	storet 1,mem_le_pairing_mode
+	jam FLAG_LE_BONDING_MITM_SECURE,mem_le_pres_auth
+	branch module_le_set_displayonly
+endif
+module_le_set_no_pairing:
+	jam FLAG_LE_NO_BONDING_NO_MITM,mem_le_pres_auth
+module_le_set_noinputnooutput:	
+	jam FLAG_IOCAP_NOINPUTNOOUTPUT,mem_le_pres_iocap
+	branch module_hci_event_receive_valid_cmd	
+module_le_set_pairing_mode_lagacy_just_work:
+	jam FLAG_LE_BONDING_MITM,mem_le_pres_auth
+	branch module_le_set_noinputnooutput
+module_le_set_pairing_mode_lagacy_passkey:
+	jam FLAG_LE_BONDING_MITM,mem_le_pres_auth
+module_le_set_displayonly:	
+	jam FLAG_IOCAP_DISPLAYONLY,mem_le_pres_iocap
+	branch module_hci_event_receive_valid_cmd	
+
+	
+//command opcode 0x34
+module_hci_cmd_le_set_adv_data:
+	fetch 1,mem_module_uart_len
+	sub pdata,31,null
+	nbranch module_hci_event_receive_invalid_cmd,positive
+	store 1,mem_le_adv_data_len
+	copy pdata,loopcnt
+	copy rega,contru
+	arg mem_le_adv_data,contw
+	call uart_copy_rx_bytes_fast
+	branch module_hci_event_receive_valid_cmd
+	
+
+//command opcode 0x35
+module_hci_cmd_le_set_scan_data:
+	fetch 1,mem_module_uart_len
+	sub pdata,31,null
+	nbranch module_hci_event_receive_invalid_cmd,positive
+	store 1,mem_le_scan_data_len
+	copy pdata,loopcnt
+	copy rega,contru
+	arg mem_le_scan_data,contw
+	call uart_copy_rx_bytes_fast	
+	branch module_hci_event_receive_valid_cmd	
+
+	
+//command opcode 0x36
+module_hci_cmd_le_send_conn_update_req:
+	fetch 2,mem_ui_state_map
+	bbit0 UI_STATE_BLE_CONNECTED,module_hci_event_receive_invalid_cmd
+	fetch 1,mem_module_uart_len
+	bne 0x08,module_hci_event_receive_invalid_cmd
+	copy rega,contru
+	ifetch 8,contru
+	store 8,mem_le_interval_min
+	jam BT_CMD_LE_UPDATE_CONN,mem_fifo_temp
+	call  ui_ipc_send_cmd
+	branch module_hci_event_receive_valid_cmd
+
+
+//command opcode 0x37
+module_hci_cmd_set_le_adv_parameter:
+	ifetch 2,contru
+	store 2,mem_le_adv_interval
+	branch module_hci_event_receive_valid_cmd
+	
+	
+//command opcode 0x38
+module_hci_cmd_le_start_pairing:
+	fetch 1,mem_le_pairing_mode
+	branch module_hci_event_receive_invalid_cmd,blank
+	fetch 1,mem_le_pairing_state
+	bne FLAG_LE_PAIRING_NULL,module_hci_event_receive_invalid_cmd
+	fetch 1,mem_le_enc_state
+	bne FLAG_LE_ENC_NULL,module_hci_event_receive_invalid_cmd
+	call check_51cmd_le_smp_sec_req
+	branch module_hci_event_receive_valid_cmd	
+
+
+//command opcode 0x40
+module_hci_cmd_set_wake_gpio:
+	fetch 1,mem_module_uart_len
+	bne 5,module_hci_event_receive_invalid_cmd
+	ifetch 1,contru
+	store 1,mem_module_mcu_wake_pin
+	ifetch 4,contru
+	store 4, mem_module_mcu_wake_delay_us
+	fetcht 1,mem_module_mcu_wake_pin
+	call gpio_config_output
+	call module_set_mcu_wake_pin_low
+	branch module_hci_event_receive_valid_cmd
+	
+
+//command opcode 0x42
+module_hci_cmd_set_tx_power:
+	fetch 1,mem_module_uart_len
+	bne 0x01,module_hci_event_receive_invalid_cmd
+	ifetch 1,contru
+	store 1,mem_tx_power
+	branch module_hci_event_receive_valid_cmd
+
+
+//command opcode 0x48
+module_hci_cmd_le_confirm_gkey:
+	ifetch 1,contru
+	beq 0x01,module_hci_cmd_le_confirm_gkey_fail
+	fetch 1,mem_le_secure_connect_state
+	beq LE_SC_STAT_SEND_PUBLIC_KEY,module_hci_cmd_le_confirm_gkey_ok
+	beq LE_SC_STAT_RECEIVE_DHKEY,module_hci_cmd_le_confirm_gkey_ok
+	beq LE_SC_STAT_WAIT_CONFIRM_GKEY,module_hci_cmd_le_confirm_gkey_ok
+	branch module_hci_event_receive_invalid_cmd		
+module_hci_cmd_le_confirm_gkey_ok:
+	jam FLAG_LE_SC_CONFRIM_GKEY_OK,mem_le_sc_confirm_gkey_flag
+	branch module_hci_event_receive_valid_cmd	
+	
+module_hci_cmd_le_confirm_gkey_fail:
+	call le_send_pairing_confirm_value_failed
+	branch module_hci_event_receive_valid_cmd
+
+
+//command opcode 0x49
+module_hci_cmd_set_reject_justwork_flag:
+	fetch 1,mem_module_uart_len
+	bne 0x01,module_hci_event_receive_invalid_cmd
+	call module_hci_event_receive_valid_cmd
+	ifetch 1,contru
+	branch classic_bt_clr_reject_justwork_flag,blank
+	branch classic_bt_set_reject_justwork_flag
+
+
+//command opcode 0x51
+module_hci_cmd_reset_chip:
+	call module_hci_event_receive_valid_cmd
+	call wait_uarttx
+	hjam 0x01,core_reset // rest YC1021
+	branch loop
+
+
+//command opcode 0x61
+module_hci_cmd_le_set_fixed_passkey:
+	fetch 1,mem_module_uart_len
+	beq 0,module_hci_event_receive_invalid_cmd
+	ifetch 1,contru
+	branch module_hci_cmd_le_set_random_passkey,blank
+	fetch 1,mem_module_uart_len
+	bne 5,module_hci_event_receive_invalid_cmd
+	ifetch 4,contru
+	arg 1000000,temp
+	isub temp,null
+	branch module_hci_event_receive_invalid_cmd,positive
+	store 4,mem_le_tk
+	call le_set_config_fixed_tk
+	branch module_hci_event_receive_valid_cmd
+
+module_hci_cmd_le_set_random_passkey:
+	call le_clr_config_fixed_tk
+	branch module_hci_event_receive_valid_cmd
+
+
+//command opcode 0xff
+module_hci_test_cmde_close_lpm:
+	jam 0,mem_lpm_mode
+	branch module_hci_event_receive_valid_cmd
+	
+
+/*********************HCI EVENT*********************/
+
+module_hci_event_receive_invalid_cmd:
+	arg 1,temp
+	arg 0,rega
+	branch module_hci_event_set_cmd
+
+
+module_hci_event_receive_valid_cmd:
+	arg 0,temp
+	arg 0,rega
+	branch module_hci_event_set_cmd
+
+
+//event opcode 0x00
+module_hci_event_spp_connect:
+	jam  HCI_EVENT_SPP_CONN_REP,mem_module_uart_opcode
+	branch module_hci_event_enter_standby_mode_len0
+
+
+//event opcode 0x02
+module_hci_event_le_connect:
+	jam  HCI_EVENT_LE_CONN_REP,mem_module_uart_opcode
+	branch module_hci_event_enter_standby_mode_len0
+
+
+//event opcode 0x03
+module_hci_event_spp_disconnect:
+	jam  HCI_EVENT_SPP_DIS_REP,mem_module_uart_opcode
+	branch module_hci_event_enter_standby_mode_len0
+
+
+//event opcode 0x05
+module_hci_event_le_disconnect:
+	jam  HCI_EVENT_LE_DIS_REP,mem_module_uart_opcode
+	branch module_hci_event_enter_standby_mode_len0
+
+
+//event opcode 0x06
+//input:
+//	temp: success 0; fail 1
+//	rega:Response Content length
+//	regb:Response Content address
+module_hci_event_set_cmd:
+	fetch 1,mem_module_uart_opcode
+	copy pdata,regc
+	jam  HCI_EVENT_CMD_RES,mem_module_uart_opcode
+	setarg 2
+	iadd rega,pdata
+	call module_hci_prepare_tx
+	copy regc,pdata
+	istore 1,contwu
+	istoret 1,contwu
+	copy rega,loopcnt
+	copy regb,contr
+	call uart_copy_tx_bytes
+	branch uartd_send
+
+
+//event opcode 0x07
+module_hci_event_receive_spp_data:
+//	call p_nl_clear_last_transmite_clock
+	call module_spp_clear_last_transmite_clock
+	jam HCI_EVENT_SPP_DATA_REP,mem_module_uart_opcode
+	fetch 1,mem_current_length
+	rtn blank
+	call module_hci_prepare_tx
+	fetch 1,mem_current_length
+	copy pdata,loopcnt
+	fetch 2,mem_rfcomm_uih_payload_ptr
+	copy pdata,contr
+	call uart_copy_tx_bytes_fast
+	branch uartd_send
+
+
+//event opcode 0x08
+module_hci_event_receive_le_data:
+	jam HCI_EVENT_LE_DATA_REP,mem_module_uart_opcode
+	fetch 1,mem_module_le_rx_data_len
+	icopy loopcnt
+	increase 2,pdata
+	call module_hci_prepare_tx
+	fetch 2,mem_module_le_rx_data_handle // Attribute handle
+	istore 2,contwu
+	fetch 2,mem_module_le_rx_data_address
+	icopy contr
+	call uart_copy_tx_bytes_fast
+	branch uartd_send
+
+
+//event opcode 0x09
+module_hci_event_enter_standby_mode:
+	jam HCI_EVENT_STANDBY_REP,mem_module_uart_opcode
+module_hci_event_enter_standby_mode_len0:
+	setarg 0
+	call module_hci_prepare_tx
+	branch uartd_send
+
+
+//event opcode 0x0a
+module_hci_event_status_res:
+	jam HCI_EVENT_STATUS_RES,mem_module_uart_opcode
+	setarg 1
+	call module_hci_prepare_tx
+	
+	call module_hci_read_bt_status
+	
+	fetch 2,mem_ui_state_map	
+	arg UI_STATE_BT_HID_CONN,queue
+	qisolate1 pdata
+	setflag true,3,temp
+
+	arg UI_STATE_BLE_CONNECTED,queue
+	qisolate1 pdata
+	setflag true,5,temp	
+	
+	fetch 1,mem_ui_state_map
+	arg UI_STATE_BT_SPP_CONN,queue
+	qisolate1 pdata
+	setflag true,4,temp	
+	
+	istoret 1,contwu
+	branch uartd_send
+
+//	temp: bit0 3.0 inquiry;bit1 3.0 scan;bit2 ble adv;
+
+module_hci_read_bt_status:
+	arg 0,temp
+	fetch 1,mem_scan_mode
+	arg inq_scan_mode,queue
+	qisolate1 pdata
+	setflag true,0,temp
+	arg page_scan_mode,queue
+	qisolate1 pdata
+	setflag true,1,temp	
+
+	fetch 1,mem_le_adv_enable
+	arg 0,queue
+	qisolate1 pdata
+	setflag true,2,temp	
+	rtn
+
+
+//event opcode 0x0d
+module_hci_event_store_device:
+	jam HCI_EVENT_NVRAM_REP,mem_module_uart_opcode
+	fetch 1,mem_nv_data_number
+	mul32 pdata,34,pdata
+	icopy loopcnt
+	call module_hci_prepare_tx
+	fetch 2,mem_nv_data_ptr
+	icopy contr
+	call uart_copy_tx_bytes_fast
+	branch uartd_send
+
+
+//event opcode 0x0e
+module_hci_event_gkey_generate:
+	jam HCI_EVENT_GKEY,mem_module_uart_opcode
+	setarg 4
+	call module_hci_prepare_tx
+	fetch 4,mem_gkey
+	istore 4,contwu
+	branch uartd_send
+
+
+//event opcode 0x0f
+module_hci_event_invalid_packet:
+	jam HCI_EVENT_INVALID_PACKET,mem_module_uart_opcode
+	hfetch 2,core_uart_rxitems
+	arg 0xff,temp
+	call not_greater_than
+	copy pdata,loopcnt
+	call module_hci_prepare_tx
+	call uartd_prepare_rx
+	call uart_copy_rx2tx
+	branch uartd_send
+
+
+//event opcode 0x10
+module_hci_event_passkey_entry_mode:
+	jam  HCI_EVENT_GET_PASSKEY,mem_module_uart_opcode
+	branch module_hci_event_enter_standby_mode_len0
+
+
+//event opcode 0x11
+module_hci_event_le_tk:
+	jam HCI_EVENT_LE_TK,mem_module_uart_opcode
+	setarg 4
+	call module_hci_prepare_tx
+	fetch 4,mem_le_tk
+	istore 4,contwu
+	branch uartd_send
+
+
+//event opcode 0x14
+module_hci_event_le_pairing_fail:
+	arg FLAG_BLE_PAIRING_FAIL,rega
+	branch module_hci_event_pairing_completed
+
+module_hci_event_le_pairing_success:
+	arg FLAG_BLE_PAIRING_SUCCESS,rega
+	branch module_hci_event_pairing_completed
+
+module_hci_event_bt_pairing_fail:
+	arg FLAG_BT_PAIRING_FAIL,rega
+	branch module_hci_event_pairing_completed
+
+module_hci_event_bt_pairing_success:
+	arg FLAG_BT_PAIRING_SUCCESS,rega
+
+module_hci_event_pairing_completed:
+	jam 0,mem_flag_mode_ssp_pin
+	jam HCI_EVENT_LE_PAIRING_STATE,mem_module_uart_opcode
+	setarg 2
+	call module_hci_prepare_tx
+	copy rega,pdata
+	istore 2,contwu
+	branch uartd_send
+
+
+//event opcode 0x15
+module_hci_event_pause_enc:
+	arg FLAG_EVENT_PAUSE_ENC,regc
+	branch module_hci_event_enc
+
+module_hci_event_start_enc:
+	arg FLAG_EVENT_START_ENC,regc
+
+module_hci_event_enc:
+	jam HCI_EVENT_LE_ENCRYPTION_STATE,mem_module_uart_opcode
+	setarg 1
+	call module_hci_prepare_tx
+	copy regc,pdata
+	istore 1,contwu
+	branch uartd_send
+
+
+//event opcode 0x1d
+module_hci_event_le_gkey:
+	jam HCI_EVENT_LE_GKEY,mem_module_uart_opcode
+	setarg 4
+	call module_hci_prepare_tx
+	fetch 4,mem_gkey
+	istore 4,contwu
+	branch uartd_send
+
+
+//****************************************************************//
+	//module_hci_prepare_tx
+	//function:write hci packet header
+	//input: pdata-----packet length  (1byte)
+	//input: mem_uart_opcode------opcode (1byte)
+	//output:contwu --- pointer to packet payload
+	//use reg: contwu,pdata
+//****************************************************************//	
+module_hci_prepare_tx:
+	jam 0x02,mem_module_uart_cmd
+	store 1,mem_module_uart_len
+	storet 8,mem_temp
+	bpatch patch1c_2,mem_patch1c
+	call module_set_mcu_wake_pin_high_delay
+	fetcht 8,mem_temp
+	call uartd_prepare_tx
+	fetch 3,mem_module_uart_cmd
+	istore 3,contwu
+	rtn
+
+
+module_set_mcu_wake_pin_high_delay:
+	call module_check_mcu_wake_pin_high
+	rtn true
+module_set_mcu_wake_pin_h_delay:
+	call module_set_mcu_wake_pin_high
+	fetch 4,mem_module_mcu_wake_delay_us
+	rshift2 pdata,pdata
+	rtn blank
+	branch delay
+
+module_set_mcu_wake_pin_high:
+	//call ice_break
+	fetcht 1,mem_module_mcu_wake_pin
+	branch gpio_out_active
+
+module_check_mcu_wake_pin_high:
+	fetcht 1,mem_module_mcu_wake_pin
+	branch gpio_check_active
+
+module_set_mcu_wake_pin_low:
+	fetcht 1,mem_module_mcu_wake_pin
+	branch gpio_out_inactive
+
+
+delay:
+	increase -1,pdata
+	nop 38
+	nbranch delay,blank
+	rtn
+
+/*********************hci command end*********************/
+
+/*********************hci ble receive data start*********************/
+
+//rega is le rx data address
+//regb is le rx data length
+//mem_le_att_handle is write handle
+module_le_receive_data:
+	call module_check_ble_encrypt_state
+	rtn user
+	copy rega,pdata
+	store 2,mem_module_le_rx_data_address
+	copy regb,pdata
+	store 1,mem_module_le_rx_data_len
+	fetch 2,mem_le_att_handle
+	fetcht 2,mem_module_data_write_handle
+	isub temp,null
+	branch module_le_receive_data_ok,zero
+	fetcht 2,mem_module_data_write_handle2
+	isub temp,null
+	nrtn zero
+module_le_receive_data_ok:	
+	store 2,mem_module_le_rx_data_handle
+	branch module_hci_event_receive_le_data
+
+
+/*********************hci ble receive data end*********************/
+
+module_exit_sniff:
+	fetch 1,mem_module_flag
+	rtnbit1 MOUDLE_TASK_UNSNIFF
+	call module_set_unsniff_task_flag	
+	branch app_bt_sniff_exit
+
+
+module_set_lpm_mult_2:
+	jam 2,mem_lpm_mult
+	rtn
+
+
+
+module_bb_event_timer:
+	branch module_read_vdd_timer
+
+module_read_vdd_timer:
+	fetch 1,mem_module_read_vdd_flag
+	rtn blank
+	fetch 1,mem_module_read_vdd_count
+	rtn blank
+	increase -1,pdata
+	store 1,mem_module_read_vdd_count
+	nrtn blank
+	jam FLAG_MODULE_READ_VDD_COUNT,mem_module_read_vdd_count
+	call adc_set_mode
+	call vdd_calculate_by_mode
+	div pdata,0x64
+	call wait_div_end
+	quotient pdata
+	remainder temp
+	store 1,mem_module_vdd_quotient
+	storet 1,mem_module_vdd_remainder
+	rtn	
+	
+
+module_control_air_flow:
+	call check_uart_tx_buff
+	branch app_l2cap_flow_control_enable,positive
+	branch app_l2cap_flow_control_disable
+
+
+/**************module state *******************/
+module_set_sniff_task_flag:
+	arg MOUDLE_TASK_SNIFF,queue
+	branch module_set_state
+
+module_clear_sniff_task_flag:
+	arg MOUDLE_TASK_SNIFF,queue
+	branch module_clr_state
+
+module_set_unsniff_task_flag:
+	arg MOUDLE_TASK_UNSNIFF,queue
+	branch module_set_state
+
+module_clear_unsniff_task_flag:
+	arg MOUDLE_TASK_UNSNIFF,queue
+	branch module_clr_state
+
+module_set_le_tx_data_flag:
+	arg MODULE_FLAG_BLE_DATA_FINISH,queue
+	branch module_set_state
+	
+module_clear_le_tx_data_flag:
+	arg MODULE_FLAG_BLE_DATA_FINISH,queue
+	branch module_clr_state
+
+module_clr_state:
+	fetch 1,mem_module_flag
+	qset0 pdata
+	store 1,mem_module_flag
+	rtn
+
+module_set_state:
+	fetch 1,mem_module_flag
+	qset1 pdata
+	store 1,mem_module_flag
+	rtn
+	
+/**************module state end*******************/
+
+
+else
+
+endif

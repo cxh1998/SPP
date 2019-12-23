@@ -1,0 +1,413 @@
+define BOOT_FROM_EEPROM
+define PATCH  
+define DEBUG_RF_INIT
+
+INCLUDE "bt_format"
+org 0x0000		   // start from patch ram address start
+
+ifdef PATCH
+    bbit1 8,pf_patch_ext
+    beq patch00_0,p_soft_reset
+    beq patch10_5,p_shutdown_radio
+    beq patch11_1,p_set_freq_tx
+    beq patch16_1,p_lpm_check_wake_lock
+    beq patch1b_5,p_module_init
+    beq patch1c_0,p_module_hci_cmd_control
+    branch loop
+pf_patch_ext:
+    beq patch29_2,p_le_receive_skip
+    beq patch2c_6,p_le_parse
+    beq patch2f_6,p_parse_lmp
+    beq patch30_2,p_send_lmp
+    beq patch30_5,p_ssp_disable
+    beq patch34_6,p_parse_dlci0_rp
+    beq patch3d_7,p_sp_initialize_256
+    branch loop
+
+p_soft_reset:
+    clear_stack
+ifdef BOOT_FROM_EEPROM
+    call initialize_radio
+else
+    call initialize_radio,wake
+endif
+    branch soft_reset + 4
+
+p_shutdown_radio:
+    branch p_shutdown_radio0,is_rx
+    hjam 0xd4, 0x955
+    nop 4
+    hjam 0xd2, 0x955
+    nop 4
+    hjam 0xd1, 0x955
+    nop 4	
+    fetch 1,mem_tx_power
+    beq TX_POWER_0DB,p_shutdown_radio_0db
+    beq TX_POWER_3DB,p_shutdown_radio_3db
+    beq TX_POWER_5DB,p_shutdown_radio_5db
+    beq TX_POWER_f3DB,p_shutdown_radio_f3db
+    beq TX_POWER_f5DB,p_shutdown_radio_f5db
+    beq TX_POWER_PAIR,p_shutdown_radio_pair
+p_shutdown_radio_5db:	
+p_shutdown_radio_0db:
+    hjam 0xd0, 0x955
+    hjam 0xe0, 0x956
+p_shutdown_radio0:
+    force 0x08,radio_ctrl
+    branch shutdown_radio0
+    
+p_shutdown_radio_pair:
+p_shutdown_radio_f5db:
+p_shutdown_radio_f3db:
+p_shutdown_radio_3db:
+    hjam 0xd0,0x955
+    hjam 0xc0,0x956
+    branch p_shutdown_radio0
+
+p_lpm_check_ble_tx:
+    arg wake_lock_ble_tx_patch,queue
+    fetch 1,mem_le_tx_buff_used
+    nbranch lpm_get_wake_lock,blank
+    branch lpm_put_wake_lock
+    
+p_lpm_check_wake_lock:
+    call p_lpm_check_ble_tx
+    branch lpm_check_wake_lock + 1
+
+p_module_init:
+    setarg p_module_process_idle
+    store 2,mem_cb_idle_process
+
+    setarg p_module_lpm_lock
+    store 2,mem_cb_check_wakelock
+
+    setarg p_module_process_bb_event
+    store 2,mem_cb_bb_event_process
+
+    setarg p_module_le_receive_data
+    store 2,mem_cb_att_write
+    
+    fetcht 1,mem_module_mcu_wake_pin
+    call gpio_config_output
+    call module_set_mcu_wake_pin_low	
+    branch module_init + 23
+
+p_module_process_idle:
+    call module_control_air_flow
+    call l2cap_malloc_is_fifo_full
+    nrtn blank
+    branch p_module_process
+p_module_hci_in_excp:
+	call delay_10ms
+	call module_hci_event_invalid_packet
+	branch module_hci_release_except
+p_module_process:
+    hfetch 1,core_uart_status
+    bbit1 uart_status_rx_fifo_empty,module_process_with_credit  //rx no data
+    call uartd_prepare_rx
+    
+    // head - 0x43 0x4d 0x44
+    ifetch 1,contru
+    bne 0x43,p_module_hci_in_excp
+    ifetch 1,contru
+    bne 0x4d,p_module_hci_in_excp
+    ifetch 1,contru
+    bne 0x44,p_module_hci_in_excp
+    copy contru,rega
+    
+    // type - 0x01
+    ifetch 1,contru
+    bne 0x01,p_module_hci_in_excp
+    
+    hfetch 2,core_uart_rxitems
+    sub pdata,5,null 
+    rtn positive
+   
+    // opcode
+    ifetch 1,contru
+    store 1,mem_module_uart_opcode
+    
+    // length
+    ifetcht 1,contru
+    //copy contru,rega //数据段起始地址
+    //increase -1,temp //减去最后一位校验码
+    storet 1,mem_module_uart_len
+    add temp,7,temp           // temp= temp + 7
+    hfetch 2,core_uart_rxitems
+    isub temp,temp             // temp = pdata - temp
+    nrtn positive	         // 长度校验：数据段长度 + 包头尾开销= 总长度
+    copy contru,pdata
+    store 2,mem_uart_data_addr
+    
+//包尾校验
+    fetch 1,mem_module_uart_len
+    iadd contru,contru   //contru = contru + pdata
+    ifetch 1,contru  //此处取出来的最后一位就是校验码
+    store 1, mem_uart_check
+    
+    jam 0, mem_uart_check_value
+    fetch 1,mem_module_uart_len
+    pincrease 3       //pdata = pdata + 3, 数据内容长度 + cmd + opcode + length 
+    copy pdata,loopcnt
+   // fetch 2,mem_uart_check_start_addr
+    //copy pdata,contr
+    call p_data_check
+    
+    fetcht 1, mem_uart_check_value
+    fetch 1,mem_uart_check
+    isub temp,null     //null = pdata - temp
+    nbranch p_module_hci_in_excp,zero	
+    
+    fetch 2,mem_uart_data_addr
+    istore 2,contru
+    hfetch 2,core_uart_rxitems
+    
+    jam HCI_DISCARD_PACKET,mem_module_temp_nl_discard_packet
+    call module_hci_cmd_control
+    fetch 1,mem_module_temp_nl_discard_packet
+    rtneq HCI_NOT_DISCARD_PACKET
+    branch module_hci_dicard_packet //discard this packet
+
+p_data_check:
+	//计算以你的校验码
+	//并将其赋值到temp
+         // 注意 此过程中不要使用pdata寄存器
+    
+	copy rega,contr                                  //取出数据段的地址
+	ifetcht 1,contr			                 //取数据
+	copy contr,rega			        //保存地址
+    
+	fetch 1,mem_uart_check_value   //取校验值11bf
+	iadd temp, temp			        //累加
+	storet 1,mem_uart_check_value  //保存累加值
+    
+	loop p_data_check
+	rtn
+
+p_module_lpm_lock:
+    hfetch 2,core_uart_txitems
+    call module_set_mcu_wake_pin_low,blank
+    fetch 1,mem_le_pairing_state
+    bne FLAG_LE_PAIRING_NULL,p_module_lpm_lock_check_pairing
+    
+    branch module_lpm_lock
+
+p_module_lpm_lock_check_pairing:
+    beq FLAG_LE_PAIRING_END,module_lpm_lock
+    branch app_get_lpm_wake_lock
+
+
+p_module_process_bb_event:
+    copy regc,pdata
+    beq BT_EVT_LE_CONNECTED,module_process_le_conn+1
+    branch module_process_bb_event + 1
+
+p_module_le_receive_data:
+    call module_check_ble_encrypt_state
+    rtn user
+    copy rega,pdata
+    store 2,mem_module_le_rx_data_address
+    copy regb,pdata
+    store 1,mem_module_le_rx_data_len
+    fetch 2,mem_le_att_handle
+    fetcht 2,mem_module_data_write_handle
+    isub temp,null
+    branch p_module_le_receive_data_ok,zero
+
+    fetcht 2,mem_module_data_write_handle2
+    isub temp,null
+    branch p_module_le_receive_data_ok,zero
+    
+    fetcht 2,mem_module_data_write_handle3
+    isub temp,null
+    nrtn zero
+p_module_le_receive_data_ok:	
+    store 2,mem_module_le_rx_data_handle
+    branch module_hci_event_receive_le_data
+
+p_module_hci_cmd_control:
+    fetch 1,mem_module_uart_opcode
+    beq HCI_CMD_POWER_REQ,p_module_hci_cmd_power_request
+    branch module_hci_cmd_control+1
+
+p_module_hci_cmd_power_request:
+    fetch 1,mem_module_read_vdd_flag
+    branch module_hci_event_receive_invalid_cmd,blank
+    call module_read_vdd_timer+8
+    branch module_hci_cmd_power_request
+
+    
+p_le_parse:
+    rtnmark1 mark_old_packet
+    call le_fifo_check_full
+    nrtn blank
+    fetch 1,mem_le_rxbuf
+    and pdata,0x3,pdata
+    store 1,mem_le_packet_llid
+    ifetch 1,contr
+    and pdata,0x1f,pdata
+    store 1,mem_le_packet_size
+    rtn blank							//empty rtn
+    copy contr,pdata
+    store 2,mem_le_payload_ptr
+    fetch 1,mem_le_packet_llid
+    beq LLID_LE_LL,le_parse_ll
+    call le_check_l2cap_complete
+    arg wake_lock_ble_rx_patch,queue
+    nbranch lpm_get_wake_lock,user
+    call lpm_put_wake_lock
+    branch le_parse_l2cap + 3
+
+p_parse_lmp:
+     fetch 1,mem_lmi_opcode2
+     beq LMP_ENCRYPTION_KEY_SIZE_REQ,p_parse_lmp_crypt_key
+
+     branch parse_lmp + 21
+
+p_parse_lmp_crypt_key:
+    fetcht 1,mem_rxbuf+1
+    sub temp,6,null
+    branch reject_lmp_packet_pdu_not_allowed,positive
+    branch parse_lmp_crypt_key + 1
+    
+reject_lmp_packet_pdu_not_allowed:
+    jam PDU_NOT_ALLOWED,mem_lmo_reason2
+    branch reject_lmp_packet
+    
+
+p_send_lmp:
+    disable user
+    call lmo_fifo_process
+    fetch 1,mem_lmp_to_send
+    rtn blank
+    bbit1 7,p_send_lmp_escape
+    branch send_lmp0
+    
+p_send_lmp_escape:
+    beq LMP_EXT_FEATURES_RES,p_send_lmpext_features_res
+    beq LMP_EXT_FEATURES_REQ,p_send_lmpext_features_req	
+    branch send_lmp_escape
+
+p_send_lmpext_features_res:
+    call p_check_ssp_enable
+    fetch 1,mem_lmp_to_send
+    branch send_lmpext_features_res
+p_send_lmpext_features_req:
+    call p_check_ssp_enable
+    fetch 1,mem_lmp_to_send
+    branch send_lmpext_features_req
+
+p_check_ssp_enable:
+    fetch 1,mem_ssp_enable 
+    branch ssp_disable, blank
+    branch  ssp_enable
+
+p_ssp_disable:
+    fetch 1,mem_features+6
+    set0 param_featrue_ssp,pdata
+    store 1,mem_features+6
+    setarg 0x1
+    store 2,mem_lmpext_ssp_enable
+    rtn
+
+p_sp_initialize_256:	
+    fetch 1,mem_le_secure_connect_enable
+    branch  le_secure_connection_disable,blank
+//	call le_secure_connection_enable
+    call sp_clear_flags
+    branch sp_pubkey_calc_256
+    
+p_parse_dlci0_rp:
+    fetch 1,mem_current_frame_type
+    beq RFCOMM_FRAME_TYPE_SABM,rfcomm_rx_process_DLCI0_sabm
+    beq RFCOMM_FRAME_TYPE_UA,rfcomm_rx_process_DLCI0_ua
+    beq RFCOMM_FRAME_TYPE_UIH,p_parse_DLCI0_rp_uih
+    beq RFCOMM_FRAME_TYPE_DISCONN,parse_uih_rp_spp_disconn_send_event
+    rtn
+p_parse_DLCI0_rp_uih:
+    fetch 2,mem_rfcomm_uih_payload_ptr
+    copy pdata,contr
+    call get_rfcomm_uih_head_struct
+    fetch 1,mem_uih_cmd_type
+    beq UIH_PARAM_NEG_CMD,parse_DLCI0_rp_uih_pn_cmd
+    beq UIH_PARAM_NEG_RES,parse_DLCI0_rp_uih_pn_res
+    beq UIH_MODEM_STATUS_CMD,parse_DLCI0_rp_uih_ms_cmd
+    beq UIH_MODEM_STATUS_RES,p_parse_DLCI0_rp_uih_ms_res
+    beq UIH_PARAM_CMD_REMOVE_PORT,parse_DLCI0_rp_uih_cmd_port	
+    branch rfcomm_rx_process_end
+p_parse_DLCI0_rp_uih_ms_res:
+    jam BT_EVT_SPP_CONNECTED,mem_fifo_temp
+    call ui_ipc_send_event
+    call get_rfcomm_param_modem_status
+    branch parse_DLCI0_rp_uih_ms_res_spp
+
+p_le_receive_skip:
+    call save_rssi
+    enable enable_white
+    enable enable_crc
+    parse demod,bucket,8
+    rshift3 pwindow,pdata
+    store 1,mem_le_rxbuf
+    parse demod,bucket,8
+    rshift3 pwindow,pdata
+    istore 1,contw
+    and pdata,0x3f,loopcnt
+    branch lerx_nopayload,zero
+    sub pdata,51,null
+    ncall p_lerx_max_length,positive
+    branch lerx_loop
+
+p_lerx_max_length:
+    arg 51,loopcnt
+    rtn
+
+
+p_set_freq_tx:
+    storet 1,mem_last_freq
+    call set_freq_tx_offset
+    call rf_write_freq
+    setarg param_pll_setup
+    call sleep
+p_txon:	
+    hjam 0x1,rfen_adc
+    hjam 0x3c,rfen_rx
+    hjam 0xe0,rfen_tx
+    hjam 0x12,0x96d
+    nop 10
+    hjam 0x01,rfen_mdm
+    hjam 0x3d,rfen_mdm
+    nop 10
+    hjam 0xb7,rfen_sn
+    nop 10
+    hjam 0x7f, rfen_mdm
+    hjam 0xba,0x894b
+    fetch 1,mem_tx_power
+    beq TX_POWER_0DB,p_set_tx_power_0db
+    beq TX_POWER_3DB,p_set_tx_power_3db	
+    beq TX_POWER_5DB,p_set_tx_power_5db
+    beq TX_POWER_f3DB,set_tx_power_f3db	
+    beq TX_POWER_f5DB,set_tx_power_f5db
+    beq TX_POWER_PAIR,set_tx_power_pair
+p_set_tx_power_0db:
+    setarg 0x88e0d0
+    hstore 3,0x8955
+    setarg 0x105c
+    hstore 2,0x8958
+    branch set_tx_power_0db
+p_set_tx_power_3db:
+    setarg 0x88e0d0
+    hstore 3,0x8955
+    setarg 0x103c
+    hstore 2,0x8958
+    branch set_tx_power_3db
+p_set_tx_power_5db:
+    setarg 0x88e0d0
+    hstore 3,0x8955
+    setarg 0x103c
+    hstore 2,0x8958
+    branch set_tx_power_5db
+
+
+
+endif
+
