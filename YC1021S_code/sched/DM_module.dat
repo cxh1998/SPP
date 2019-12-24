@@ -1,3 +1,7 @@
+mem_uart_head_45:45
+mem_uart_head_56:56
+mem_uart_head_54:54
+mem_uart_cmd:02
 
 mem_patch00:
 01   #mem_patch00
@@ -189,8 +193,6 @@ mem_le_interval_min:
 
 mem_le_local_mtu:b9
 mem_le_remote_mtu:17
-
-
 #####################################
 
 

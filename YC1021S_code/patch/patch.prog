@@ -97,10 +97,49 @@ p_module_process_idle:
     call l2cap_malloc_is_fifo_full
     nrtn blank
     branch p_module_process
+
+	
+ //event opcode 0x0f
+p_module_hci_event_invalid_packet:
+	jam HCI_EVENT_INVALID_PACKET,mem_module_uart_opcode
+	hfetch 2,core_uart_rxitems
+	arg 0xff,temp
+	call not_greater_than
+	copy pdata,loopcnt
+	call p_module_hci_prepare_tx
+	call uartd_prepare_rx
+	call uart_copy_rx2tx
+	branch uartd_send
+
 p_module_hci_in_excp:
 	call delay_10ms
-	call module_hci_event_invalid_packet
+	call p_module_hci_event_invalid_packet
 	branch module_hci_release_except
+/*
+p_at_process:
+	 set1 mark_ext_patch,mark
+	 bpatch patch32_2,mem_patch32
+	 fetch 2,mem_current_packet_length
+	 arg 300,temp
+	 isub temp,null
+	 branch at_error_rev_end,positive
+	 call check_module_disabled
+	 call get_uart_rrptr
+	 copy contru,rega
+	 fetch 2,mem_current_packet_length
+	 increase -2,pdata
+	 iadd contru,contru
+	 ifetch 2,contru
+	 arg AT_CMD_END,temp
+	 isub temp,null
+	 nrtn zero  //the end is not \n
+	 copy rega,contru
+	 arg mem_prarm_atp,regb
+	 arg 3,loopcnt
+	 call string_compare_uart_follow
+	 nbranch at_error_rev_end,true
+	 branch at_dispatch
+ */
 p_module_process:
     hfetch 1,core_uart_status
     bbit1 uart_status_rx_fifo_empty,module_process_with_credit  //rx no data
@@ -113,33 +152,32 @@ p_module_process:
     bne 0x4d,p_module_hci_in_excp
     ifetch 1,contru
     bne 0x44,p_module_hci_in_excp
-    copy contru,rega
+    copy contru,regc
     
-    // type - 0x01
+    /*  type - 0x01 */
     ifetch 1,contru
     bne 0x01,p_module_hci_in_excp
-    
     hfetch 2,core_uart_rxitems
     sub pdata,5,null 
     rtn positive
-   
-    // opcode
+    
+     /* opcode */
     ifetch 1,contru
     store 1,mem_module_uart_opcode
     
-    // length
+    /* length */
     ifetcht 1,contru
-    //copy contru,rega //数据段起始地址
+    copy contru,rega //数据段起始地址
     //increase -1,temp //减去最后一位校验码
     storet 1,mem_module_uart_len
-    add temp,7,temp           // temp= temp + 7
-    hfetch 2,core_uart_rxitems
-    isub temp,temp             // temp = pdata - temp
-    nrtn positive	         // 长度校验：数据段长度 + 包头尾开销= 总长度
+    add temp,7,temp                       //  temp= temp + 7 
+    hfetch 2,core_uart_rxitems   // total len
+    isub temp,null                             // null = pdata - temp
+    nrtn positive	                      // 长度校验：数据段长度 + 包头尾开销= 总长度
     copy contru,pdata
     store 2,mem_uart_data_addr
     
-//包尾校验
+    /* check sum */
     fetch 1,mem_module_uart_len
     iadd contru,contru   //contru = contru + pdata
     ifetch 1,contru  //此处取出来的最后一位就是校验码
@@ -158,24 +196,120 @@ p_module_process:
     isub temp,null     //null = pdata - temp
     nbranch p_module_hci_in_excp,zero	
     
-    fetch 2,mem_uart_data_addr
-    istore 2,contru
-    hfetch 2,core_uart_rxitems
+    // fetch 2,mem_uart_data_addr
+    // istore 2,contru
+    // hfetch 2,core_uart_rxitems
     
     jam HCI_DISCARD_PACKET,mem_module_temp_nl_discard_packet
-    call module_hci_cmd_control
+    call p_module_hci_cmd_control
     fetch 1,mem_module_temp_nl_discard_packet
     rtneq HCI_NOT_DISCARD_PACKET
-    branch module_hci_dicard_packet //discard this packet
+    branch p_module_hci_dicard_packet //discard this packet
+   
+   p_module_hci_cmd_control:
+	 bpatch patch1c_0,mem_patch1c
+	 fetch 1,mem_module_uart_opcode
+	 beq HCI_CMD_SET_BT_ADDR_REQ,module_hci_cmd_set_bt_addr
+	 beq HCI_CMD_SET_LE_ADDR_REQ,module_hci_cmd_set_le_addr
+	 beq HCI_CMD_SET_VISIBILITY_REQ,module_hci_cmd_set_visibility	
+	 beq HCI_CMD_SET_BT_NAME_REQ,module_hci_cmd_set_bt_name
+	 beq HCI_CMD_SET_LE_NAME_REQ,module_hci_cmd_set_le_name
+	 beq HCI_CMD_SPP_DATA_REQ,module_hci_cmd_receive_spp_data
+	 beq HCI_CMD_LE_DATA_REQ,module_hci_cmd_receive_le_data
+	 beq HCI_CMD_STATUS_IRQ,module_hci_cmd_inquire_status
+	 beq HCI_CMD_SET_PAIRING_REQ,module_hci_cmd_set_pairing_mode
+	 beq HCI_CMD_SET_PINCODE_REQ,module_hci_cmd_set_pincode	
+	 beq HCI_CMD_SET_UARTCONTROL_REQ,module_hci_cmd_set_uart_control_mode
+	 beq HCI_CMD_SET_UART_BAUD_REQ,module_hci_cmd_set_uart_baud
+/*10*/beq HCI_CMD_VERSION_REQ,p_module_hci_cmd_version_request
+	 beq HCI_CMD_BT_DISCONNECT,module_hci_cmd_bt_disconnect
+	 beq HCI_CMD_BLE_DISCONNECT,module_hci_cmd_ble_disconnect
+	 beq HCI_CMD_SET_NVRAM_REQ,module_hci_cmd_set_nvram
+	 beq HCI_CMD_CONFIRM_GKEY,module_hci_cmd_confirm_gkey
+	 beq HCI_CMD_SET_CREDIT_GIVEN,module_hci_cmd_set_credit_given
+	 beq HCI_CMD_AUTO_ADV_SCAN,module_hci_cmd_auto_adv
+	 beq HCI_CMD_POWER_REQ,module_hci_cmd_power_request
+	 beq HCI_CMD_POWER_SET,module_hci_cmd_power_set
+	 beq HCI_CMD_PASSKEY_ENTRY,module_hci_cmd_passkey_entry
+	 beq HCI_CMD_SET_GPIO,module_hci_cmd_set_gpio
+	 beq HCI_CMD_READ_GPIO,module_hci_cmd_read_gpio
+	 beq HCI_CMD_LE_SET_PAIRING,module_hci_cmd_le_set_pairing_mode
+	 beq HCI_CMD_LE_SET_ADV_DATA,module_hci_cmd_le_set_adv_data
+	 beq HCI_CMD_LE_SET_SCAN_DATA,module_hci_cmd_le_set_scan_data
+	 beq HCI_CMD_LE_SEND_CONN_UPDATE_REQ,module_hci_cmd_le_send_conn_update_req
+	 beq HCI_CMD_LE_SET_ADV_PARM,module_hci_cmd_set_le_adv_parameter
+	 beq HCI_CMD_LE_START_PAIRING,module_hci_cmd_le_start_pairing
+	 beq HCI_CMD_SET_WAKE_GPIO,module_hci_cmd_set_wake_gpio
+	 beq HCI_CMD_SET_TX_POWER,module_hci_cmd_set_tx_power
+	 beq HCI_CMD_LE_CONFIRM_GKEY,module_hci_cmd_le_confirm_gkey
+	 beq HCI_CMD_REJECT_JUSTWORK,module_hci_cmd_set_reject_justwork_flag
+	 beq HCI_CMD_RESET_CHIP_REQ,module_hci_cmd_reset_chip
+	 beq HCI_CMD_LE_SET_FIXED_PASSKEY,module_hci_cmd_le_set_fixed_passkey
+	 beq HCI_TEST_CMD_CLOSE_LPM,module_hci_test_cmde_close_lpm
+	 branch  module_hci_event_receive_invalid_cmd
+//****************************************************************//
+//module_hci_prepare_tx
+//function:  write hci packet header
 
+//input     :  pdata-----packet length  (1byte)
+//input     :  mem_uart_opcode------opcode (1byte)
+
+//output   : contwu --- pointer to packet payload
+//use reg : contwu,pdata
+//****************************************************************//	
+p_module_hci_prepare_tx:
+	jam 0x02,mem_uart_cmd
+	store 1,mem_uart_len
+	storet 8,mem_temp
+	bpatch patch1c_2,mem_patch1c
+	call module_set_mcu_wake_pin_high_delay
+	fetcht 8,mem_temp
+	call uartd_prepare_tx
+	fetch 5,mem_uart_head_45
+	istore 5,contwu
+	rtn	
+//command opcode 0x10
+p_module_hci_cmd_version_request:
+	arg 2,rega     					   // len
+	arg mem_soft_version_num,regb    // content adress
+	arg 0,temp  					   // success
+	branch p_module_hci_event_set_cmd
+
+//event opcode 0x06
+//input:
+//	temp: success 0; fail 1
+//	rega:Response Content length
+//	regb:Response Content address
+p_module_hci_event_set_cmd:
+	fetch 1,mem_uart_opcode
+	copy pdata,regc
+	jam  HCI_EVENT_CMD_RES,mem_uart_opcode //06
+	setarg 2
+	iadd rega,pdata  //pdata = pdata + 2
+	call p_module_hci_prepare_tx
+	
+	copy regc,pdata
+	istore 1,contwu
+	istoret 1,contwu
+	copy rega,loopcnt
+	copy regb,contr
+	call uart_copy_tx_bytes
+	branch uartd_send
+	
+p_module_hci_dicard_packet:
+	call uartd_prepare_rx
+	increase 2,contru
+	ifetch 1,contru
+	iadd contru,contru
+p_module_hci_dicard_bytes:
+	branch uartd_rxdone
 p_data_check:
 	//计算以你的校验码
 	//并将其赋值到temp
          // 注意 此过程中不要使用pdata寄存器
-    
-	copy rega,contr                                  //取出数据段的地址
+	copy regc,contr                                  //取出数据段的地址
 	ifetcht 1,contr			                 //取数据
-	copy contr,rega			        //保存地址
+	copy contr,regc			        //保存地址
     
 	fetch 1,mem_uart_check_value   //取校验值11bf
 	iadd temp, temp			        //累加
