@@ -2,7 +2,8 @@ mem_uart_head_45:45
 mem_uart_head_56:56
 mem_uart_head_54:54
 mem_uart_cmd:02
-
+mem_uart_opcode:0
+mem_uart_len:0
 mem_patch00:
 01   #mem_patch00
 00  #mem_patch01
@@ -132,13 +133,16 @@ mem_lpm_mode:01
 mem_lpm_interval:00 01
 mem_lpm_overhead:08
 mem_lpm_mult_timeout:02
-
-mem_module_wake_up_gpio:9b
+# GPIO27 High valid
+mem_module_wake_up_gpio:9b 
+# GPIO25 High valid
+##mem_module_wake_up_gpio:99
 mem_module_mcu_wake_pin:88#88
 mem_module_mcu_wake_delay_us:60 00 00 00 
 
 ###3.0###
-mem_scan_mode:00
+#03表示可发现可链接
+mem_scan_mode:03
 mem_module_spp_lpm_mult:28
 mem_lap:77 1a 21 31 10 3a
 mem_local_name_length:
@@ -162,8 +166,8 @@ mem_le_pairing_mode:00
 mem_module_data_write_handle:2d 00
 mem_module_data_write_handle2:2f 00
 mem_module_data_write_handle3:31 00
-
-mem_le_adv_enable:00
+#默认LE广播可发现
+mem_le_adv_enable:01
 mem_le_adv_interval:f0 00
 mem_module_le_lpm_mult:05
 mem_le_lap:2a 31 00 33 02 3a

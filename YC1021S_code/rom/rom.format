@@ -1653,7 +1653,7 @@ endif
 6 power_starting_cb_offset
 8 power_standby_cb_offset
 10 ui_butten_up_cb_offset
-)
+)
 
 omemalloc(
 // memblock for cover the variables portion at shutter.format
@@ -7880,5 +7880,20 @@ memalloc(
 (
   7 AA_INSERTION
 )
-
+memalloc(
+	1 mem_ack_check_sum
+	1 mem_uart_temp
+	1 mem_ack_check_sum_len
+	1 mem_ack_check_sum_cmd
+	1 mem_ack_check_sum_result
+	1 mem_uart_check
+	1 mem_uart_check_value
+	2 mem_uart_data_addr
+	1 mem_uart_head_45
+	1 mem_uart_head_56
+	1 mem_uart_head_54
+	1 mem_uart_cmd
+	1 mem_uart_opcode
+	1 mem_uart_len
+)
 

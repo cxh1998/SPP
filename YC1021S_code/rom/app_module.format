@@ -58,18 +58,6 @@ omemalloc(
 	
 )
 
-memalloc(
-	1 mem_uart_check
-	1 mem_uart_check_value
-	2 mem_uart_data_addr
-	1 mem_uart_head_45
-	1 mem_uart_head_56
-	1 mem_uart_head_54
-	1 mem_uart_cmd
-	1 mem_uart_opcode
-	1 mem_uart_len
-)
-
 (//mem_module_flag
 //bit0~bit3 config module function
 0 MODULE_FLAG_UART_FLOW_CONTROL

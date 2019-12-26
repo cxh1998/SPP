@@ -1028,7 +1028,7 @@ module_hci_cmd_set_tx_power:
 //command opcode 0x48
 module_hci_cmd_le_confirm_gkey:
 	ifetch 1,contru
-	beq 0x01,module_hci_cmd_le_confirm_gkey_fail
+	beq 0x01,p_module_hci_cmd_le_confirm_gkey_fail
 	fetch 1,mem_le_secure_connect_state
 	beq LE_SC_STAT_SEND_PUBLIC_KEY,module_hci_cmd_le_confirm_gkey_ok
 	beq LE_SC_STAT_RECEIVE_DHKEY,module_hci_cmd_le_confirm_gkey_ok
